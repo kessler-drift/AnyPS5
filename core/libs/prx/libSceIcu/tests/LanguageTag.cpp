@@ -345,6 +345,7 @@ void CheckTagVectors() {
         CheckTag(vector.locale, vector.lenient, 0);
         CheckTag(vector.locale, vector.strict, 1);
     }
+    CheckTag("ab@;", "ab", 0);
 }
 
 void CheckTagRoundTrip() {

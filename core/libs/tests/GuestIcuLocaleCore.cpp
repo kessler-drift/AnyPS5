@@ -94,6 +94,34 @@ void CheckKeyword(const char* locale, const char* keyword, const char* expected,
     }
 }
 
+void CheckCanonicalFailure(const char* locale, std::string_view written, std::int32_t expectedStatus) {
+    for (const std::int32_t capacity : {0, 1, 2, 3, 4, 64}) {
+        std::array<char, 80> buffer{};
+        buffer.fill('Q');
+        std::int32_t status = 0;
+        const auto length = uloc_canonicalize(locale, buffer.data(), capacity, &status);
+        assert(length == static_cast<std::int32_t>(written.size()));
+        assert(status == expectedStatus);
+        const auto copied = std::min(capacity, length);
+        for (std::int32_t index = 0; index < copied; ++index)
+            assert(buffer[index] == written[static_cast<std::size_t>(index)]);
+        for (std::size_t index = static_cast<std::size_t>(copied); index < buffer.size(); ++index)
+            assert(buffer[index] == 'Q');
+    }
+}
+
+std::string KeywordList(std::size_t count, std::size_t distinct) {
+    std::string result = "en@";
+    for (std::size_t index = 0; index < count; ++index) {
+        if (index != 0) result += ';';
+        result += 'k';
+        result += static_cast<char>('a' + index % distinct / 26);
+        result += static_cast<char>('a' + index % distinct % 26);
+        result += "=v";
+    }
+    return result;
+}
+
 }
 
 int main() {
@@ -151,8 +179,31 @@ int main() {
         {"en-a-bbb-x-foo", "en@a=bbb;x=foo"}, {"i-klingon@currency=EUR", "i-klingon@currency=EUR"},
         {"x_foo", "x-foo"},
         {"ROOT_gb", "root_GB"}, {"root@x=y", "root@x=y"}, {"und.utf8", "und"}, {"und@x=y", "@x=y"},
+        {"en@Collation=Phonebook", "en@collation=Phonebook"}, {"en@B=1;a=2", "en@a=2;b=1"},
+        {"en@calendar=buddhist;calendar=islamic", "en@calendar=buddhist"},
+        {"en@ calendar = buddhist ", "en@calendar=buddhist"}, {"en@A=B;C=D", "en@a=B;c=D"},
+        {"en@a b=c", "en@ab=c"}, {"en@x=a b c", "en@x=a b c"}, {"en@a=b@c=d", "en@a=b@c=d"},
+        {"en@a=b;", "en@a=b"}, {"en@a=b; ", "en@a=b"}, {"en@;a=b", "en"},
+        {"de_DE.utf8@Currency=EUR", "de_DE@currency=EUR"}, {"@Currency=EUR", "@currency=EUR"},
+        {"en_US_POSIX@CA=x;cA=y", "en_US_POSIX@ca=x"},
+        {"en@abcdefghijklmnopqrstuvwx=1", "en@abcdefghijklmnopqrstuvwx=1"},
     });
     CheckLongLanguageTag();
+    CheckCanonicalFailure("en@calendar=", "en@", 3);
+    CheckCanonicalFailure("en@calendar=x;;currency=y", "en@", 3);
+    CheckCanonicalFailure("en@k= ;a=b", "en@", 3);
+    CheckCanonicalFailure("en@a=b;c", "en@", 3);
+    CheckCanonicalFailure("en@a=b; ;c=d", "en@", 3);
+    CheckCanonicalFailure("de_DE@=b", "de_DE@", 3);
+    CheckCanonicalFailure("en@ =b", "en@", 3);
+    CheckCanonicalFailure("en@abcdefghijklmnopqrstuvwxy=1", "en@", 5);
+    CheckCanonicalFailure(KeywordList(26, 26).c_str(), "en@", 5);
+    {
+        const std::string many = KeywordList(25, 25);
+        Check(uloc_canonicalize, false, {{many.c_str(), many.c_str()}});
+        const std::string repeated = KeywordList(30, 3);
+        Check(uloc_canonicalize, false, {{repeated.c_str(), "en@kaa=v;kab=v;kac=v"}});
+    }
     CheckKeyword("en_US@currency=USD", "currency", "USD");
     CheckKeyword("de_DE@currency=EUR;collation=phonebook", "collation", "phonebook");
     CheckKeyword("en@Currency=USD", "CURRENCY", "USD");

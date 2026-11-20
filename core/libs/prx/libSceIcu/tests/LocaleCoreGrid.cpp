@@ -91,6 +91,12 @@ int main() {
         {"", "_GB", "-gb", "_Latn", "-latn-us", "_US_POSIX", ".utf8", "_GB.utf8", "@currency=EUR",
          "_GB@currency=EUR"},
     });
+    Expand({
+        {"en", "de_DE", "_US", "", "sr_Latn_RS", "fr.utf8"},
+        {"@Collation=Phonebook", "@B=1;a=2", "@calendar=buddhist;calendar=islamic", "@ calendar = buddhist ",
+         "@calendar=", "@calendar=x;;currency=y", "@k= ;a=b", "@a=b; ;c=d", "@a=b;c", "@;a=b", "@a=b;",
+         "@A=B;C=D", "@x=a b c", "@a=b=c", "@a.b=c", "@ =b", "@abcdefghijklmnopqrstuvwxy=1"},
+    });
     if (failures != 0) {
         std::fprintf(stderr, "%d differences\n", failures);
         return EXIT_FAILURE;

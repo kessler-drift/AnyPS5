@@ -25,7 +25,11 @@
 namespace {
 
 constexpr std::int32_t kIllegalArgument = 1;
+constexpr std::int32_t kInvalidFormat = 3;
+constexpr std::int32_t kInternalProgramError = 5;
 constexpr std::int32_t kBufferOverflow = 15;
+constexpr std::size_t kKeywordCapacity = 25;
+constexpr std::size_t kKeywordLimit = 25;
 constexpr std::int32_t kStringNotTerminated = -124;
 constexpr std::int32_t kFullNameCapacity = 157;
 
@@ -529,6 +533,58 @@ std::int32_t Write(std::string_view value, char* destination, std::int32_t capac
     return size;
 }
 
+std::int32_t WriteFailure(std::string_view value, char* destination, std::int32_t capacity,
+                          std::int32_t* status, std::int32_t error) {
+    if (capacity < 0 || (capacity > 0 && !destination) ||
+        value.size() > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
+        *status = kIllegalArgument;
+        return 0;
+    }
+    const auto size = static_cast<std::int32_t>(value.size());
+    if (size > 0 && capacity > 0)
+        std::memcpy(destination, value.data(), static_cast<std::size_t>(std::min(capacity, size)));
+    *status = error;
+    return size;
+}
+
+struct Keyword {
+    std::string name;
+    std::string_view value;
+};
+
+std::int32_t Keywords(std::string_view list, std::vector<Keyword>& keywords) {
+    std::size_t position = 0;
+    while (true) {
+        while (position < list.size() && list[position] == ' ') ++position;
+        if (position == list.size()) break;
+        if (keywords.size() == kKeywordLimit) return kInternalProgramError;
+        const auto equal = list.find('=', position);
+        const auto semicolon = list.find(';', position);
+        if (equal == std::string_view::npos || (semicolon != std::string_view::npos && semicolon < equal))
+            return kInvalidFormat;
+        if (equal - position >= kKeywordCapacity) return kInternalProgramError;
+        Keyword keyword;
+        for (std::size_t index = position; index < equal; ++index) {
+            if (list[index] != ' ') keyword.name.push_back(Lower(list[index]));
+        }
+        if (keyword.name.empty()) return kInvalidFormat;
+        std::size_t first = equal + 1;
+        while (first < list.size() && list[first] == ' ') ++first;
+        if (first == list.size() || first == semicolon) return kInvalidFormat;
+        std::size_t last = semicolon == std::string_view::npos ? list.size() : semicolon;
+        while (list[last - 1] == ' ') --last;
+        keyword.value = list.substr(first, last - first);
+        const bool duplicate = std::any_of(keywords.begin(), keywords.end(),
+                                           [&](const Keyword& known) { return known.name == keyword.name; });
+        if (!duplicate) keywords.push_back(std::move(keyword));
+        if (semicolon == std::string_view::npos) break;
+        position = semicolon + 1;
+    }
+    std::sort(keywords.begin(), keywords.end(),
+              [](const Keyword& left, const Keyword& right) { return left.name < right.name; });
+    return 0;
+}
+
 std::int32_t Component(const char* locale, char* result, std::int32_t capacity,
                        std::int32_t* status, int which) {
     if (!status || *status > 0) return 0;
@@ -651,20 +707,32 @@ std::int32_t APS5_VABI uloc_canonicalize(const char* locale, char* result,
     Parts parts = Parse(id.c_str());
     parts.encoding.clear();
     std::string canonical = BaseName(parts);
-    if (!parts.keywords.empty()) {
-        std::vector<std::string> keywords;
+    const auto assign = parts.keywords.find('=');
+    const auto separator = parts.keywords.find(';');
+    if (assign == std::string::npos) {
+        std::vector<std::string> items;
         std::size_t start = 0;
         while (start < parts.keywords.size()) {
             const auto end = parts.keywords.find(';', start);
-            const std::string item = parts.keywords.substr(
-                start, end == std::string::npos ? end : end - start);
-            if (!item.empty()) keywords.push_back(item);
+            std::string item = parts.keywords.substr(start, end == std::string::npos ? end : end - start);
+            if (!item.empty()) items.push_back(std::move(item));
             if (end == std::string::npos) break;
             start = end + 1;
         }
-        std::sort(keywords.begin(), keywords.end());
-        for (const auto& keyword : keywords)
-            canonical += std::string(canonical.find('@') == std::string::npos ? "@" : ";") + keyword;
+        std::sort(items.begin(), items.end());
+        for (std::size_t index = 0; index < items.size(); ++index)
+            canonical += (index == 0 ? "@" : ";") + items[index];
+    } else if (separator == std::string::npos || separator > assign) {
+        canonical += '@';
+        std::vector<Keyword> keywords;
+        if (const std::int32_t error = Keywords(parts.keywords, keywords))
+            return WriteFailure(canonical, result, capacity, status, error);
+        for (std::size_t index = 0; index < keywords.size(); ++index) {
+            if (index != 0) canonical += ';';
+            canonical += keywords[index].name;
+            canonical += '=';
+            canonical += keywords[index].value;
+        }
     }
     return Write(canonical, result, capacity, status, false);
 }
