@@ -102,6 +102,10 @@ int main() {
          "fr_FR.utf8", "en-US"},
         {"@euro", "@EURO", "@foo-bar", "@foo,bar", "@foo.bar", "@a;b", "@euro@x"},
     });
+    Expand({
+        {"en_US_POSIX", "de_DE_PREEURO", "sr_Latn_RS_REVISED", "en__POSIX", "en_Latn__POSIX"},
+        {"_", "__", "_.utf8", "_@euro", "-@euro", "__@euro", "_.utf8@euro", "_@calendar=x"},
+    });
     if (failures != 0) {
         std::fprintf(stderr, "%d differences\n", failures);
         return EXIT_FAILURE;

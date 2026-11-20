@@ -498,12 +498,18 @@ Parts Parse(const char* locale) {
         parts.country = Region(tokens[index]);
         ++index;
     }
+    const bool modifier = parts.at && !parts.keywords.empty() && parts.keywords.front() != '.' &&
+                          parts.keywords.front() != '@';
     if (index < tokens.size()) {
         const bool last = index + 1 == tokens.size();
         if (!tokens[index].empty() || last) ++parts.fields;
         parts.variantField = !tokens[index].empty() || !last;
-        parts.trailingSeparator = tokens[index].empty() && last;
+        parts.trailingSeparator = tokens[index].empty() && last && modifier;
     }
+    std::size_t end = tokens.size();
+    while (end > index && tokens[end - 1].empty()) --end;
+    const std::size_t trailing = tokens.size() - end;
+    const bool named = end > index;
     if (!region && index < tokens.size() && tokens[index].empty()) {
         ++index;
         if (index < tokens.size()) parts.variant += "_";
@@ -512,6 +518,14 @@ Parts Parse(const char* locale) {
         if (tokens[index].empty()) continue;
         if (!parts.variant.empty() && parts.variant.back() != '_') parts.variant.push_back('_');
         parts.variant += ChangeCase(tokens[index], true);
+    }
+    if (named) {
+        parts.variant.append(trailing, '_');
+    } else if (trailing > 1) {
+        parts.variant.assign(trailing - 1, '_');
+    } else if (trailing == 1 && !modifier) {
+        parts.variant = "_";
+        parts.encoding.clear();
     }
     return parts;
 }

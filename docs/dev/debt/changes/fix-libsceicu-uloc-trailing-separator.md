@@ -1,0 +1,7 @@
+# libSceIcu
+
+## add Functional locale parsing and metadata
+
+- [Final separators in uloc_getBaseName and uloc_canonicalize](../../../core/libs/prx/libSceIcu/LocaleCore.cpp) - follow [ICU 68.2](https://github.com/unicode-org/icu/blob/84e1f26ea77152936e70d53178a816dbfbf69989/icu4c/source/common/uloc.cpp#L1259-L1301) where ICU 78.1 differs (a console is unmeasured). With no variant, a final `_` or `-` is kept: `en_US_` gives `en_US_`, `en_` `en__`, `x-foo_` `x-foo__` and `root_` `root__` (78.1 `en_US`, `en`, `x-foo`, `root`); `en_US__` gives `en_US_` (78.1 `en_US__`); `uloc_getBaseName("en_US_.utf8")` drops the encoding (`en_US_`; 78.1 `en_US`). After a variant a final `-` becomes `_` (`en_US_POSIX-` gives `en_US_POSIX_`; 78.1 keeps `-`). `uloc_toLanguageTag("root_")` gives `root` (78.1 `und`).
+- [Doubled separators inside a variant in uloc_getBaseName and uloc_canonicalize](../../../core/libs/prx/libSceIcu/LocaleCore.cpp) - are merged into one, where ICU 68.2 and 78.1 keep both: `uloc_getBaseName("en_US_POSIX__FOO_")` gives `en_US_POSIX_FOO_` (68.2 and 78.1 `en_US_POSIX__FOO_`; a console is unmeasured).
+- [Keyword list after a final separator in uloc_getBaseName](../../../core/libs/prx/libSceIcu/LocaleCore.cpp) - gives the ICU 78.1 result, not the 68.2 one: `uloc_getBaseName("en_US_@calendar=x")` gives `en_US` as 78.1 does, while 68.2 reads the keyword list as the variant and gives `en_US_CALENDAR=X` (a console is unmeasured).

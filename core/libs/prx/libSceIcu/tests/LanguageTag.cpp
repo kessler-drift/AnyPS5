@@ -326,6 +326,10 @@ constexpr TagVector kTagVectors[] = {
     {"en_A@", "en-x-lvariant-a", nullptr},
     {"en__POSIX@", "en-posix", nullptr},
     {"x-foo@euro", "und-x-lvariant-euro", nullptr},
+    {"en_US_POSIX_", "en-US-posix", nullptr},
+    {"en__POSIX_", "en-posix", nullptr},
+    {"de_DE_PREEURO_", "de-DE-preeuro", nullptr},
+    {"en___", "en", nullptr},
     {"en-x-elmer", "en-x-elmer", "en-x-elmer"},
     {"en-a-bar-u-baz", "en-a-bar-u-baz", "en-a-bar-u-baz"},
 };

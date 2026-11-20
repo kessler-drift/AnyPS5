@@ -165,6 +165,14 @@ int main() {
         {"de_DE@euro", "de_DE@euro"}, {"en_US.utf8@euro", "en_US.utf8@euro"}, {"en@", "en@"},
         {"en@a;b", "en@a;b"}, {"fr_FR.ISO8859-15@euro", "fr_FR.ISO8859-15@euro"},
         {"en-US@euro", "en_US@euro"}, {"I-Klingon@Euro", "i-klingon@Euro"},
+        {"en_US_@", "en_US_@"}, {"en_@", "en__@"}, {"x-foo_@", "x-foo__@"}, {"en_Latn_@", "en_Latn__@"},
+        {"en_US_POSIX_@euro", "en_US_POSIX_@euro"}, {"de_DE_PREEURO_@euro", "de_DE_PREEURO_@euro"},
+        {"sr_Latn_RS_REVISED_@euro", "sr_Latn_RS_REVISED_@euro"}, {"en_US_POSIX-@euro", "en_US_POSIX_@euro"},
+        {"en_US_POSIX__@euro", "en_US_POSIX__@euro"}, {"en_US_POSIX_.utf8", "en_US_POSIX_.utf8"},
+        {"en__POSIX_@x", "en__POSIX_@x"}, {"en_US__@euro", "en_US_@euro"}, {"en_US_POSIX_", "en_US_POSIX_"},
+        {"en_US_POSIX-", "en_US_POSIX_"}, {"en_US_", "en_US_"}, {"en_US__", "en_US_"}, {"en_", "en__"},
+        {"en___", "en___"}, {"en_US_.utf8", "en_US_"}, {"x-foo_", "x-foo__"}, {"en_US_.utf8@", "en_US_@"},
+        {"en_US_@@x", "en_US_@@x"}, {"en_US_@.x", "en_US_@.x"}, {"en_US__.utf8", "en_US_.utf8"},
     });
     Check(uloc_canonicalize, false, {
         {"EN-us", "en_US"}, {"eN_LatN_us", "en_Latn_US"},
@@ -202,6 +210,12 @@ int main() {
         {"en_@euro", "en__EURO"}, {"en_Latn_@euro", "en_Latn__EURO"}, {"en_US_@euro", "en_US_EURO"},
         {"en_A_B@", "en__A_B"}, {"en_US_A_B@euro", "en_US_A_B_EURO"},
         {"x-foo@euro", "x-foo__EURO"}, {"i-klingon@euro", "i-klingon__EURO"}, {"x-foo_US@euro", "x-foo_US_EURO"},
+        {"en_US_POSIX_@euro", "en_US_POSIX__EURO"}, {"en_US_POSIX-@euro", "en_US_POSIX__EURO"},
+        {"en_US_POSIX_.utf8@euro", "en_US_POSIX__EURO"}, {"en_US_POSIX__@euro", "en_US_POSIX___EURO"},
+        {"en__POSIX_@x", "en__POSIX___X"}, {"en_POSIX_@euro", "en__POSIX__EURO"}, {"en_US__@euro", "en_US___EURO"},
+        {"en_US_POSIX_@", "en_US_POSIX_"}, {"en_US_POSIX_@calendar=x", "en_US_POSIX_@calendar=x"},
+        {"en_US_POSIX_", "en_US_POSIX_"}, {"en_US_", "en_US_"}, {"en_Latn_", "en_Latn__"}, {"x-foo_", "x-foo__"},
+        {"i-klingon_", "i-klingon__"}, {"en_US_@", "en_US_"}, {"en_@", "en__"},
     });
     CheckLongLanguageTag();
     CheckCanonicalFailure("en@calendar=", "en@", 3);
