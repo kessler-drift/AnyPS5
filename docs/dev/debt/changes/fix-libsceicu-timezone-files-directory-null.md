@@ -1,0 +1,5 @@
+# libSceIcu
+
+## change [Time zone files directory]
+
+- [Time zone files directory](../../../core/libs/prx/libSceIcu/Configuration.cpp) is unverified on a console. `u_setTimeZoneFilesDirectory` throws when ICU would copy the path in place, the path fitting in the stored buffer's capacity, onto a range that overlaps it, because `uprv_memcpy` on overlapping ranges is undefined. Otherwise the directory is an ICU 78.1 `CharString`, allocated with the host allocator, set as [putil.cpp](https://github.com/unicode-org/icu/blob/049e0d6a420629ac7db77256987d083a563287b5/icu4c/source/common/putil.cpp) sets it, and the empty string is returned for a failure status. The default is empty; `ICU_TIMEZONE_FILES_DIR` and the build-time default are not read, and nothing in this module reads time zone files. A null `UErrorCode` throws where ICU dereferences it. The NIDs come from the 3.20 inventory and their presence on current firmware is unproven (see ICU export availability). Closes when: compared with the console.

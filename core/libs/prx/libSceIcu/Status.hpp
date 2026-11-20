@@ -39,4 +39,11 @@ inline std::int32_t Checked(std::int64_t length) {
     return static_cast<std::int32_t>(length);
 }
 
+inline void RequireDisjoint(const void* destination, const void* source, std::int32_t length) {
+    const auto to = reinterpret_cast<std::uintptr_t>(destination);
+    const auto from = reinterpret_cast<std::uintptr_t>(source);
+    const std::uintptr_t distance = from > to ? from - to : to - from;
+    if (length > 0 && distance < static_cast<std::uintptr_t>(length)) NotImplemented_nid_no_patch("libSceIcu: overlapping copy");
+}
+
 }

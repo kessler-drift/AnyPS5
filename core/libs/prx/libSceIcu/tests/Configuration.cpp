@@ -158,9 +158,44 @@ void TimeZoneDirectory() {
     Require(std::string(u_getTimeZoneFilesDirectory_nid_postfix(&status)) == "/warn");
 
     u_setTimeZoneFilesDirectory_nid_postfix(nullptr, &status);
+    Require(status == 0 && std::string(u_getTimeZoneFilesDirectory_nid_postfix(&status)) == "" && status == 0);
+
+    u_setTimeZoneFilesDirectory_nid_postfix("/a", &status);
+    status = -124;
+    u_setTimeZoneFilesDirectory_nid_postfix(nullptr, &status);
+    Require(status == -124);
+    status = 0;
+    Require(std::string(u_getTimeZoneFilesDirectory_nid_postfix(&status)) == "" && status == 0);
+
+    u_setTimeZoneFilesDirectory_nid_postfix("/a", &status);
+    status = 1;
+    u_setTimeZoneFilesDirectory_nid_postfix(nullptr, &status);
     Require(status == 1);
     status = 0;
-    Require(std::string(u_getTimeZoneFilesDirectory_nid_postfix(&status)) == "");
+    Require(std::string(u_getTimeZoneFilesDirectory_nid_postfix(&status)) == "/a" && status == 0);
+
+    const std::string longPath = "/" + std::string(99, 'a');
+    for (const std::string& value : {std::string("/self/alias"), longPath}) {
+        u_setTimeZoneFilesDirectory_nid_postfix(value.c_str(), &status);
+        u_setTimeZoneFilesDirectory_nid_postfix(u_getTimeZoneFilesDirectory_nid_postfix(&status), &status);
+        Require(status == 0 && std::string(u_getTimeZoneFilesDirectory_nid_postfix(&status)) == "");
+        u_setTimeZoneFilesDirectory_nid_postfix(value.c_str(), &status);
+        const char* saved = u_getTimeZoneFilesDirectory_nid_postfix(&status);
+        u_setTimeZoneFilesDirectory_nid_postfix("/x", &status);
+        u_setTimeZoneFilesDirectory_nid_postfix(saved, &status);
+        Require(status == 0 && std::string(u_getTimeZoneFilesDirectory_nid_postfix(&status)) == "");
+    }
+    u_setTimeZoneFilesDirectory_nid_postfix("/abcd/efghijkl", &status);
+    u_setTimeZoneFilesDirectory_nid_postfix(u_getTimeZoneFilesDirectory_nid_postfix(&status) + 10, &status);
+    Require(status == 0 && std::string(u_getTimeZoneFilesDirectory_nid_postfix(&status)) == "ijkl");
+    u_setTimeZoneFilesDirectory_nid_postfix("/0123456789/abc", &status);
+    const char* stale = u_getTimeZoneFilesDirectory_nid_postfix(&status) + 12;
+    u_setTimeZoneFilesDirectory_nid_postfix("/x", &status);
+    u_setTimeZoneFilesDirectory_nid_postfix(stale, &status);
+    Require(status == 0 && std::string(u_getTimeZoneFilesDirectory_nid_postfix(&status)) == "abc");
+    u_setTimeZoneFilesDirectory_nid_postfix("/abc/def", &status);
+    RequireThrows([&] { u_setTimeZoneFilesDirectory_nid_postfix(u_getTimeZoneFilesDirectory_nid_postfix(&status) + 1, &status); });
+    Require(status == 0);
 
     u_setTimeZoneFilesDirectory_nid_postfix("/first", &status);
     u_setTimeZoneFilesDirectory_nid_postfix("", &status);
@@ -236,6 +271,15 @@ void Cleanup() {
     for (auto& thread : threads) thread.join();
     u_cleanup_nid_postfix();
     Require(std::string(u_getDataDirectory_nid_postfix()) == "");
+
+    u_setTimeZoneFilesDirectory_nid_postfix(("/" + std::string(99, 'w')).c_str(), &status);
+    u_cleanup_nid_postfix();
+    u_setTimeZoneFilesDirectory_nid_postfix("/0123456789abcdefghi", &status);
+    const char* saved = u_getTimeZoneFilesDirectory_nid_postfix(&status) + 5;
+    u_setTimeZoneFilesDirectory_nid_postfix(("/" + std::string(49, 'z')).c_str(), &status);
+    u_setTimeZoneFilesDirectory_nid_postfix(saved, &status);
+    Require(status == 0 && std::string(u_getTimeZoneFilesDirectory_nid_postfix(&status)) == "456789abcdefghi");
+    u_cleanup_nid_postfix();
 }
 
 }

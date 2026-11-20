@@ -11,7 +11,9 @@
 #include "prx/libSceIcu/Status.hpp"
 #include "prx/libc/include/Api.hpp"
 #include "prx/libc/include/General.hpp"
+#include "charstr.h"
 #include <cstring>
+#include <optional>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -50,7 +52,7 @@ void Release(void* memory) {
 }
 std::mutex DirectoryLock;
 std::string DataDirectory;
-std::string TimeZoneDirectory;
+std::optional<icu::CharString> TimeZoneDirectory(std::in_place);
 
 bool CopySource(void* destination, const void* source, std::size_t bytes) {
     const int savedErrno = errno;
@@ -124,18 +126,20 @@ void APS5_VABI u_setDataDirectory_nid_postfix(const char* directory) {
 const char* APS5_VABI u_getTimeZoneFilesDirectory_nid_postfix(std::int32_t* status) {
     if (Icu::Failure(status)) return "";
     const std::lock_guard lock(DirectoryLock);
-    return TimeZoneDirectory.c_str();
+    return TimeZoneDirectory->data();
 }
 
 void APS5_VABI u_setTimeZoneFilesDirectory_nid_postfix(const char* path, std::int32_t* status) {
     if (Icu::Failure(status)) return;
     const std::lock_guard lock(DirectoryLock);
-    TimeZoneDirectory.clear();
-    if (!path) {
-        *status = Icu::IllegalArgument;
-        return;
-    }
-    TimeZoneDirectory = path;
+    TimeZoneDirectory->clear();
+    const std::int32_t length = path ? static_cast<std::int32_t>(std::strlen(path)) : 0;
+    auto code = static_cast<UErrorCode>(*status);
+    std::int32_t capacity = 0;
+    TimeZoneDirectory->getAppendBuffer(0, 0, capacity, code);
+    if (length <= capacity) Icu::RequireDisjoint(TimeZoneDirectory->data(), path, length);
+    TimeZoneDirectory->append(path, length, code);
+    *status = code;
 }
 
 
@@ -146,7 +150,7 @@ void APS5_VABI u_cleanup_nid_postfix() {
     }
     const std::lock_guard lock(DirectoryLock);
     DataDirectory.clear();
-    TimeZoneDirectory.clear();
+    TimeZoneDirectory.emplace();
 }
 
 void IcuReleaseMemory_nid_no_patch(void* memory) {
