@@ -1,0 +1,5 @@
+# libSceIcu
+
+## add Functional locale parsing and metadata
+
+- [POSIX variants in uloc_canonicalize](../../../core/libs/prx/libSceIcu/LocaleCore.cpp) - an `@` modifier follows the `_` separators counted as in [ICU 68.2](https://github.com/unicode-org/icu/blob/84e1f26ea77152936e70d53178a816dbfbf69989/icu4c/source/common/uloc.cpp#L1505-L1611), so `en_POSIX@euro` gives `en__POSIX_EURO` (78.1 `en__POSIX__EURO`; a console is unmeasured). With no variant, a separator just before a non-empty modifier or its encoding gives the 78.1 result: `uloc_getBaseName("en_US_@euro")` gives `en_US@euro` (68.2 `en_US_EURO`), `uloc_canonicalize("en_US_@euro@x")` `en_US_EURO` (68.2 `en_US_EURO_X`). After a variant or before an empty `@`, 68.2 and 78.1 agree and this gives a third result, already wrong on `main` and not fixed here: `uloc_getBaseName` gives `en_US@` for `en_US_@` and `en_US_POSIX@euro` for `en_US_POSIX_@euro` (ICU `en_US_@`, `en_US_POSIX_@euro`); `uloc_canonicalize("en_US_POSIX_@euro")` gives `en_US_POSIX_EURO` (ICU `en_US_POSIX__EURO`).

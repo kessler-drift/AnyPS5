@@ -162,6 +162,9 @@ int main() {
         {"x-private@currency=EUR", "x-private"}, {"x_foo", "x-foo"}, {"i-klingon.utf8", "i-klingon.utf8"},
         {"root_GB", "root_GB"}, {"root.utf8", "root.utf8"}, {"root@x=y", "root"},
         {"und.utf8", "und.utf8"}, {"und_US", "_US"},
+        {"de_DE@euro", "de_DE@euro"}, {"en_US.utf8@euro", "en_US.utf8@euro"}, {"en@", "en@"},
+        {"en@a;b", "en@a;b"}, {"fr_FR.ISO8859-15@euro", "fr_FR.ISO8859-15@euro"},
+        {"en-US@euro", "en_US@euro"}, {"I-Klingon@Euro", "i-klingon@Euro"},
     });
     Check(uloc_canonicalize, false, {
         {"EN-us", "en_US"}, {"eN_LatN_us", "en_Latn_US"},
@@ -187,6 +190,18 @@ int main() {
         {"de_DE.utf8@Currency=EUR", "de_DE@currency=EUR"}, {"@Currency=EUR", "@currency=EUR"},
         {"en_US_POSIX@CA=x;cA=y", "en_US_POSIX@ca=x"},
         {"en@abcdefghijklmnopqrstuvwx=1", "en@abcdefghijklmnopqrstuvwx=1"},
+        {"de_DE@euro", "de_DE_EURO"}, {"en@foo", "en__FOO"}, {"en_US.utf8@euro", "en_US_EURO"},
+        {"en_Latn@euro", "en_Latn_EURO"}, {"en_Latn_US@euro", "en_Latn_US_EURO"},
+        {"en_US_POSIX@euro", "en_US_POSIX_EURO"}, {"en__POSIX@euro", "en__POSIX__EURO"},
+        {"en_Latn__POSIX@euro", "en_Latn__POSIX__EURO"}, {"@euro", "__EURO"}, {"en@", "en__"},
+        {"_US@euro", "_US_EURO"}, {"en@foo-bar", "en__FOO_BAR"}, {"en@foo,bar", "en__FOO_BAR"},
+        {"en@foo.bar", "en__FOO"}, {"en_US@euro@x", "en_US_EURO"}, {"en@a;b", "en__A;B"},
+        {"en_A@", "en__A"}, {"en_A@euro", "en__A_EURO"}, {"srb_POSIX@", "srb__POSIX"},
+        {"en_POSIX@euro", "en__POSIX_EURO"}, {"en_Latn_POSIX@euro", "en_Latn__POSIX_EURO"},
+        {"en_Latn_US_POSIX@", "en_Latn_US_POSIX"}, {"en__POSIX@", "en__POSIX_"}, {"ab@;", "ab__;"},
+        {"en_@euro", "en__EURO"}, {"en_Latn_@euro", "en_Latn__EURO"}, {"en_US_@euro", "en_US_EURO"},
+        {"en_A_B@", "en__A_B"}, {"en_US_A_B@euro", "en_US_A_B_EURO"},
+        {"x-foo@euro", "x-foo__EURO"}, {"i-klingon@euro", "i-klingon__EURO"}, {"x-foo_US@euro", "x-foo_US_EURO"},
     });
     CheckLongLanguageTag();
     CheckCanonicalFailure("en@calendar=", "en@", 3);

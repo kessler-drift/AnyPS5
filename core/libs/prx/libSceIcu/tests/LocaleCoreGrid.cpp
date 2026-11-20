@@ -97,6 +97,11 @@ int main() {
          "@calendar=", "@calendar=x;;currency=y", "@k= ;a=b", "@a=b; ;c=d", "@a=b;c", "@;a=b", "@a=b;",
          "@A=B;C=D", "@x=a b c", "@a=b=c", "@a.b=c", "@ =b", "@abcdefghijklmnopqrstuvwxy=1"},
     });
+    Expand({
+        {"en", "de_DE", "_US", "", "en_Latn", "en_Latn_US", "en_US_POSIX", "en__POSIX", "en_Latn__POSIX",
+         "fr_FR.utf8", "en-US"},
+        {"@euro", "@EURO", "@foo-bar", "@foo,bar", "@foo.bar", "@a;b", "@euro@x"},
+    });
     if (failures != 0) {
         std::fprintf(stderr, "%d differences\n", failures);
         return EXIT_FAILURE;

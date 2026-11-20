@@ -317,6 +317,15 @@ constexpr TagVector kTagVectors[] = {
     {"eng_USA", "en-US", "en-US"},
     {"deu_DEU_1901", "de-DE-1901", "de-DE-1901"},
     {"x-elmer", "x-elmer", "x-elmer"},
+    {"en@foo", "en-x-lvariant-foo", nullptr},
+    {"de_DE@euro", "de-DE-x-lvariant-euro", nullptr},
+    {"en_US.utf8@euro", "en-US-x-lvariant-euro", nullptr},
+    {"en_US_POSIX@euro", "en-US-posix-x-lvariant-euro", nullptr},
+    {"srb_POSIX@", "srb-u-va-posix", "srb-u-va-posix"},
+    {"en_POSIX@euro", "en-posix-x-lvariant-euro", nullptr},
+    {"en_A@", "en-x-lvariant-a", nullptr},
+    {"en__POSIX@", "en-posix", nullptr},
+    {"x-foo@euro", "und-x-lvariant-euro", nullptr},
     {"en-x-elmer", "en-x-elmer", "en-x-elmer"},
     {"en-a-bar-u-baz", "en-a-bar-u-baz", "en-a-bar-u-baz"},
 };
@@ -346,6 +355,7 @@ void CheckTagVectors() {
         CheckTag(vector.locale, vector.strict, 1);
     }
     CheckTag("ab@;", "ab", 0);
+    CheckTag("ab@;", nullptr, 1);
 }
 
 void CheckTagRoundTrip() {
@@ -442,8 +452,8 @@ void CheckTagStatus() {
 
     std::memset(buffer, 'Z', sizeof(buffer));
     status = 0;
-    if (uloc_toLanguageTag("en@foo", buffer, sizeof(buffer), 0, &status) != 2) TagFail("en@foo", "malformed keyword length");
-    if (status != 3 || std::memcmp(buffer, "enZ", 3) != 0) TagFail("en@foo", "malformed keyword status");
+    if (uloc_toLanguageTag("en@foo", buffer, sizeof(buffer), 1, &status) != 2) TagFail("en@foo", "strict POSIX variant length");
+    if (status != kIllegalArgument || std::memcmp(buffer, "enZ", 3) != 0) TagFail("en@foo", "strict POSIX variant output");
 
     status = 0;
     try {
