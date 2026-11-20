@@ -13,10 +13,12 @@
 #include "prx/libSceIcu/Status.hpp"
 #include "prx/libc/include/Api.hpp"
 #include "prx/libc/include/General.hpp"
+#include "prx/libSceIcu/include/LegacyExports.hpp"
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -74,6 +76,46 @@ std::string Canonicalize(const char* id) {
     return name;
 }
 
+bool ReachesIDefault(std::string_view id) {
+    return id.starts_with("i-default") && id.size() > 9 && std::string_view("._-@").find(id[9]) != std::string_view::npos &&
+        id.find('@') != std::string_view::npos;
+}
+
+bool Bcp47Form(std::string_view id) {
+    if (id.find('@') != std::string_view::npos) return false;
+    if (id.size() == 1) return true;
+    std::size_t length = 0;
+    for (const char c : id) {
+        if (c != '_' && c != '-') {
+            ++length;
+            continue;
+        }
+        if (length == 1) return true;
+        length = 0;
+    }
+    return false;
+}
+
+bool TrailingSeparator(std::string_view id) {
+    const auto base = id.substr(0, id.find_first_of(".@"));
+    return !base.empty() && (base.back() == '_' || base.back() == '-');
+}
+
+std::optional<std::string> Name(const char* id) {
+    if (ReachesIDefault(id)) NotImplemented_nid_no_patch("uloc_setDefault: ICU 68.2 deadlocks resolving i-default under its default locale lock");
+    if (Bcp47Form(id) || TrailingSeparator(id)) NotImplemented_nid_no_patch("uloc_setDefault: ICU 78.1 uloc_getName differs from ICU 68.2 for this locale ID form");
+    std::int32_t status = 0;
+    const std::int32_t length = uloc_getName_nid_postfix(id, nullptr, 0, &status);
+    if (status == Icu::IllegalArgument) NotImplemented_nid_no_patch("uloc_setDefault: ICU 78.1 limits subtag lengths that ICU 68.2 accepts");
+    if (status > 0 && status != Icu::BufferOverflow) return std::nullopt;
+    std::string name(static_cast<std::size_t>(length) + 1, '\0');
+    status = 0;
+    uloc_getName_nid_postfix(id, name.data(), length + 1, &status);
+    if (status > 0) return std::nullopt;
+    name.resize(static_cast<std::size_t>(length));
+    return name;
+}
+
 std::size_t LanguageLength(const std::string& name) {
     const auto at = name.find('@');
     const auto separator = name.find('_');
@@ -97,6 +139,14 @@ const char* SetSystemDefault() {
     return defaultName;
 }
 
+void SetDefault(const char* id) {
+    const auto resolved = Name(id);
+    if (!resolved) return;
+    std::string name = Name(resolved->c_str()).value_or(std::string());
+    std::lock_guard lock(defaultMutex);
+    defaultName = DefaultNames().insert(std::move(name)).first->c_str();
+}
+
 }
 
 extern "C" {
@@ -115,8 +165,11 @@ const char* APS5_VABI uloc_getDefault() {
 
 void APS5_VABI uloc_setDefault_nid_postfix(const char* newDefaultLocale, std::int32_t* status) {
     if (Icu::Failure(status)) return;
-    if (newDefaultLocale) NotImplemented_nid_no_patch("uloc_setDefault with a locale ID, which ICU resolves through uloc_getName");
-    SetSystemDefault();
+    if (!newDefaultLocale) {
+        SetSystemDefault();
+        return;
+    }
+    SetDefault(newDefaultLocale);
 }
 
 }

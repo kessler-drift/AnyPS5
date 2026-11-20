@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <source_location>
+#include <string>
 #include <string_view>
 #include <type_traits>
 
@@ -18,6 +20,73 @@ static_assert(std::is_same_v<decltype(&uprv_getDefaultLocaleID_nid_postfix), con
 
 void SetEnvironment(const char* name, const char* value) {
     Require(setenv_nid_postfix(name, value, 1) == 0);
+}
+
+void Set(const char* id, std::source_location location = std::source_location::current()) {
+    std::int32_t status = 0;
+    uloc_setDefault_nid_postfix(id, &status);
+    Require(status == 0, location);
+}
+
+void RequireDefault(std::string_view expected, std::source_location location = std::source_location::current()) {
+    if (uloc_getDefault() != expected) std::fprintf(stderr, "default \"%s\"\n", uloc_getDefault());
+    Require(uloc_getDefault() == expected, location);
+}
+
+void CheckExplicit(const char* systemName) {
+    Set("fr_FR");
+    const char* french = uloc_getDefault();
+    RequireDefault("fr_FR");
+    Set("EN-us");
+    const char* english = uloc_getDefault();
+    RequireDefault("en_US");
+    Set("en_US");
+    Require(uloc_getDefault() == english);
+    Set("fr_FR");
+    Require(uloc_getDefault() == french);
+
+    std::int32_t status = 1;
+    uloc_setDefault_nid_postfix("de_DE", &status);
+    Require(status == 1);
+    Require(uloc_getDefault() == french);
+
+    status = -124;
+    uloc_setDefault_nid_postfix("de_DE", &status);
+    Require(status == -124);
+    RequireDefault("de_DE");
+
+    for (const char* rejected : {"en@=x", "en@a=", "en@abcdefghijklmnopqrstuvwxyzabcdefgh=v"}) {
+        Set(rejected);
+        RequireDefault("de_DE");
+    }
+
+    Set("sr_RS.UTF-8@latin");
+    RequireDefault("sr_RS.UTF-8@latin");
+    Set("de@collation=phonebook;currency=EUR");
+    RequireDefault("de@collation=phonebook;currency=EUR");
+    Set("zh-hant-tw");
+    RequireDefault("zh_Hant_TW");
+    Set("en__POSIX");
+    RequireDefault("en__POSIX");
+    const std::string longVariant = "en_US_" + std::string(179, 'X');
+    Set(longVariant.c_str());
+    RequireDefault(longVariant);
+    Set("abcdefghijk_US");
+    RequireDefault("abcdefghijk_US");
+    Set("");
+    RequireDefault("");
+
+    Set("de_DE");
+    const std::string tooLongVariant = "en_US_" + std::string(180, 'X');
+    for (const char* unsettled : {"i-default@a=b", "I-default@a=b", "i_default", "x-foo", "en-US-u-ca-japanese", "en_u_ca_gregory", "a", "_",
+             "en_", "en_US-", "abcdefghijkl_US", tooLongVariant.c_str()}) {
+        status = 0;
+        RequireThrows([&] { uloc_setDefault_nid_postfix(unsettled, &status); });
+        RequireDefault("de_DE");
+    }
+
+    Set(nullptr);
+    Require(uloc_getDefault() == systemName);
 }
 
 void Check(std::string_view systemId, std::string_view defaultName) {
@@ -42,8 +111,7 @@ void Check(std::string_view systemId, std::string_view defaultName) {
     Require(status == 0);
     Require(uloc_getDefault() == name);
 
-    status = 0;
-    RequireThrows([&] { uloc_setDefault_nid_postfix("fr_FR", &status); });
+    CheckExplicit(name);
     RequireThrows([] { uloc_setDefault_nid_postfix(nullptr, nullptr); });
     Require(uloc_getDefault() == name);
 }
