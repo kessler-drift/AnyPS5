@@ -105,6 +105,8 @@ int main() {
         {"x-foo", "x-foo"}, {"I_Enochian", "i-enochian"}, {"x-foo_US", "x-foo"}, {"X-", "x-"},
         {"i-klingon-Latn-DE", "i-klingon"}, {"x", "x"}, {"i.utf8", "i"},
         {"i-hakka_MT_XEMXIJA", "i-hakka"}, {"I-hakka_MX", "i-hakka"}, {"X-KLINGON_us_SANJOSE", "x-klingon"},
+        {"root_GB", "root"}, {"ROOT_gb", "root"}, {"root.utf8", "root"}, {"root@x=y", "root"},
+        {"und.utf8", "und"}, {"undx", "undx"}, {"und_US", ""}, {"UND-us", ""}, {"und@x=y", ""},
     });
     Check(uloc_getCountry, true, {
         {"en", ""}, {"en_US", "US"}, {"en-US", "US"}, {"zh_Hant_TW", "TW"},
@@ -130,6 +132,8 @@ int main() {
         {"i-default", "en"}, {"i-hakka_MT_XEMXIJA", "i-hakka_MT_XEMXIJA"}, {"x-piglatin_ML.MBE", "x-piglatin_ML.MBE"},
         {"x-elmer", ""}, {"en-a-bbb-x-foo", "en"}, {"i-klingon@currency=EUR", "i-klingon"},
         {"x-private@currency=EUR", "x-private"}, {"x_foo", "x-foo"}, {"i-klingon.utf8", "i-klingon.utf8"},
+        {"root_GB", "root_GB"}, {"root.utf8", "root.utf8"}, {"root@x=y", "root"},
+        {"und.utf8", "und.utf8"}, {"und_US", "_US"},
     });
     Check(uloc_canonicalize, false, {
         {"EN-us", "en_US"}, {"eN_LatN_us", "en_Latn_US"},
@@ -146,6 +150,7 @@ int main() {
         {"sr-Latn-RS-a-bbb", "sr_Latn_RS@a=bbb"}, {"x-elmer", "@x=elmer"},
         {"en-a-bbb-x-foo", "en@a=bbb;x=foo"}, {"i-klingon@currency=EUR", "i-klingon@currency=EUR"},
         {"x_foo", "x-foo"},
+        {"ROOT_gb", "root_GB"}, {"root@x=y", "root@x=y"}, {"und.utf8", "und"}, {"und@x=y", "@x=y"},
     });
     CheckLongLanguageTag();
     CheckKeyword("en_US@currency=USD", "currency", "USD");
@@ -290,6 +295,8 @@ int main() {
     checkIso3Language("srp", "srp");
     checkIso3Language("root", "");
     checkIso3Language("und", "");
+    checkIso3Language("und.utf8", "und");
+    checkIso3Language("root_GB", "");
     checkIso3Language("i-klingon", "");
     checkIso3Language("en@x=y", "eng");
     checkIso3Country("en_US", "USA");

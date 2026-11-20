@@ -450,8 +450,14 @@ Parts Parse(const char* locale) {
     if (keyword != std::string_view::npos) parts.keywords = std::string(input.substr(keyword + 1));
 
     const auto encoding = head.find('.');
-    const std::string_view base = head.substr(0, encoding);
+    std::string_view base = head.substr(0, encoding);
     if (encoding != std::string_view::npos) parts.encoding = std::string(head.substr(encoding));
+    if (ChangeCase(input, false) == "root") {
+        base = {};
+    } else if (input.size() >= 3 && ChangeCase(input.substr(0, 3), false) == "und" &&
+               (input.size() == 3 || input[3] == '-' || input[3] == '_' || input[3] == '@')) {
+        base.remove_prefix(3);
+    }
 
     std::vector<std::string> tokens;
     std::size_t start = 0;
@@ -468,7 +474,6 @@ Parts Parse(const char* locale) {
         parts.language += "-" + ChangeCase(tokens[1], false);
         index = 2;
     }
-    if (parts.language == "und" || parts.language == "root") parts.language.clear();
     if (parts.language.size() == 3) parts.language = ShortCode(Languages, parts.language);
     if (index < tokens.size() && IsScript(tokens[index])) {
         parts.script = ChangeCase(tokens[index], false);

@@ -283,6 +283,8 @@ constexpr TagVector kTagVectors[] = {
     {"_Latn", "und-Latn", "und-Latn"},
     {"_DE", "und-DE", "und-DE"},
     {"und_FR", "und-FR", "und-FR"},
+    {"root_GB", "root-GB", "root-GB"},
+    {"root@x=y", "root-x-y", "root-x-y"},
     {"th_TH_TH", "th-TH-x-lvariant-th", nullptr},
     {"bogus", "bogus", "bogus"},
     {"foooobarrr", "und", nullptr},
