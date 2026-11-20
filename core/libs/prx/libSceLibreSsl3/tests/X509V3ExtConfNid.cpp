@@ -188,6 +188,19 @@ void TestAsn1ValueRest() {
     Require(allocations.empty());
 }
 
+void TestAsn1BitStringBytes() {
+    CheckValue(Conf(83, "ASN1:BITSTRING:@"), 83, 0, {0x03, 0x02, 0x00, 0x40});
+    CheckValue(Conf(83, "ASN1:BITSTR:0"), 83, 0, {0x03, 0x02, 0x00, 0x30});
+    CheckValue(Conf(83, "ASN1:BITSTRING:"), 83, 0, {0x03, 0x01, 0x00});
+    CheckValue(Conf(83, "ASN1:FORMAT:HEX,BITSTRING:0100"), 83, 0, {0x03, 0x03, 0x00, 0x01, 0x00});
+    CheckValue(Conf(83, "ASN1:FORMAT:HEX,BITSTRING:40"), 83, 0, {0x03, 0x02, 0x00, 0x40});
+    CheckValue(Conf(83, "ASN1:FORMAT:HEX,BITSTRING:0000"), 83, 0, {0x03, 0x03, 0x00, 0x00, 0x00});
+    CheckValue(Conf(83, "ASN1:FORMAT:HEX,BITSTRING:"), 83, 0, {0x03, 0x01, 0x00});
+    CheckValue(Conf(83, "ASN1:FORMAT:HEX,BITSTRING:ff"), 83, 0, {0x03, 0x02, 0x00, 0xff});
+    Require(Conf(83, "ASN1:FORMAT:UTF8,BITSTRING:A") == nullptr);
+    Require(allocations.empty());
+}
+
 void TestMalformed() {
     Require(Conf(83, nullptr) == nullptr);
     Require(Conf(83, "DER:0") == nullptr);
@@ -285,6 +298,7 @@ int main() {
     TestDer();
     TestAsn1();
     TestAsn1ValueRest();
+    TestAsn1BitStringBytes();
     TestMalformed();
     TestUnknownNid();
     TestPlain();

@@ -725,9 +725,12 @@ bool EncodeString(const Asn1Value& value, const std::string_view text, std::vect
         }
         if (value.type == SimpleType::OctetString) {
             AppendTlv(der, OctetStringTag, bytes);
-        } else {
+        } else if (value.format == Format::BitList) {
             const std::vector<unsigned char> content = BitStringContent(bytes);
             AppendTlv(der, BitStringTag, content);
+        } else {
+            bytes.insert(bytes.begin(), 0);
+            AppendTlv(der, BitStringTag, bytes);
         }
         return true;
     }
