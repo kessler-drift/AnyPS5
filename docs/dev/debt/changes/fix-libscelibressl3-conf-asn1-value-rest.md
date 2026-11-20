@@ -1,0 +1,5 @@
+# libSceLibreSsl3
+
+## add Functional
+
+- [X509V3_EXT_conf_nid BITLIST bit numbers](../../../core/libs/prx/libSceLibreSsl3/src/X509V3ExtConfNid.cpp) (libSceLibreSsl3) - a bit number that `strtoul` reads as a nonnegative `long` but that is negative as an `int`, such as `4294967295`, throws; it did not throw on `main`. The result depends on the firmware: [LibreSSL 3.4.1](https://github.com/libressl/openbsd/blob/078b3d1df8ca2011c1605cd40418c58fa0f5b143/src/lib/libcrypto/asn1/a_bitstr.c#L195-L226), measured, and [3.7.3](https://github.com/libressl/openbsd/blob/ec44842c68b88bb1c93a8d517ef859e8a456a822/src/lib/libcrypto/asn1/a_bitstr.c#L115-L146), reported by 11.60, set bit n + 8 for -7 to -1, fail for -16 or less first and write out of bounds otherwise; [4.0.0](https://github.com/libressl/openbsd/blob/ce488b78e0bd994780569df718596b9776ff681a/src/lib/libcrypto/asn1/a_bitstr.c#L119-L127), reported by 13.40, read and not run, fails on all. Not checked on a console. Closes when: compared with the console.

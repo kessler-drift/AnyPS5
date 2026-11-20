@@ -92,7 +92,7 @@ LibreSsl3X509Extension* Conf(int nid, const char* value, void* conf = nullptr) {
 }
 
 void CheckValue(LibreSsl3X509Extension* extension, int nid, int critical,
-    std::initializer_list<unsigned char> expected) {
+    const std::vector<unsigned char>& bytes) {
     Require(extension != nullptr);
     Require(extension->object != nullptr);
     Require(OBJ_obj2nid_nid_postfix(extension->object) == nid);
@@ -100,11 +100,15 @@ void CheckValue(LibreSsl3X509Extension* extension, int nid, int critical,
     auto* value = static_cast<Asn1String*>(extension->value);
     Require(value != nullptr);
     Require(value->type == 4);
-    Require(value->length == static_cast<std::int32_t>(expected.size()));
-    const std::vector<unsigned char> bytes(expected);
+    Require(value->length == static_cast<std::int32_t>(bytes.size()));
     if (!bytes.empty()) Require(std::memcmp(value->data, bytes.data(), bytes.size()) == 0);
     X509_EXTENSION_free_nid_postfix(extension);
     Require(allocations.empty());
+}
+
+void CheckValue(LibreSsl3X509Extension* extension, int nid, int critical,
+    std::initializer_list<unsigned char> expected) {
+    CheckValue(extension, nid, critical, std::vector<unsigned char>(expected));
 }
 
 void TestDer() {
@@ -133,6 +137,55 @@ void TestAsn1() {
     CheckValue(Conf(83, "ASN1:FORMAT:HEX,OCTETSTRING:0102"), 83, 0, {0x04, 0x02, 0x01, 0x02});
     CheckValue(Conf(83, "ASN1:FORMAT:BITLIST,BITSTRING:0"), 83, 0, {0x03, 0x02, 0x07, 0x80});
     CheckValue(Conf(83, "critical,ASN1:INTEGER:5"), 83, 1, {0x02, 0x01, 0x05});
+}
+
+void TestAsn1ValueRest() {
+    CheckValue(Conf(83, "ASN1:UTF8String:Hello, world"), 83, 0,
+        {0x0c, 0x0c, 'H', 'e', 'l', 'l', 'o', ',', ' ', 'w', 'o', 'r', 'l', 'd'});
+    CheckValue(Conf(83, "ASN1:IA5STRING:abc  "), 83, 0, {0x16, 0x05, 'a', 'b', 'c', ' ', ' '});
+    CheckValue(Conf(83, "ASN1:OCTETSTRING:a,b"), 83, 0, {0x04, 0x03, 'a', ',', 'b'});
+    CheckValue(Conf(83, "ASN1:UTF8:a\tb\t"), 83, 0, {0x0c, 0x04, 'a', '\t', 'b', '\t'});
+    CheckValue(Conf(83, "ASN1:FORMAT:BITLIST,BITSTRING:1,3,5"), 83, 0, {0x03, 0x02, 0x02, 0x54});
+    CheckValue(Conf(83, "ASN1:FORMAT:BITLIST,BITSTRING: 1 , 9 "), 83, 0, {0x03, 0x03, 0x06, 0x40, 0x40});
+    CheckValue(Conf(83, "ASN1:FORMAT:BITLIST,BITSTRING:+5,-0"), 83, 0, {0x03, 0x02, 0x02, 0x84});
+    CheckValue(Conf(83, "ASN1:FORMAT:BITLIST,BITSTRING:7,15"), 83, 0, {0x03, 0x03, 0x00, 0x01, 0x01});
+    CheckValue(Conf(83, "ASN1:FORMAT:BITLIST,BITSTRING:4294967297"), 83, 0, {0x03, 0x02, 0x06, 0x40});
+    CheckValue(Conf(83, "ASN1:FORMAT:BITLIST,BITSTRING:-18446744073709551615"), 83, 0, {0x03, 0x02, 0x06, 0x40});
+    Require(Conf(83, "ASN1:INTEGER:5 ") == nullptr);
+    Require(Conf(83, "ASN1:BOOLEAN:TRUE,x") == nullptr);
+    Require(Conf(83, "ASN1:NULL:,x") == nullptr);
+    Require(Conf(83, "ASN1:FORMAT:HEX,OCTETSTRING:01,02") == nullptr);
+    Require(Conf(83, "ASN1:OBJECT:1.2.3,x") == nullptr);
+    Require(Conf(83, "ASN1:FORMAT:BITLIST,BITSTRING:1,,3") == nullptr);
+    Require(Conf(83, "ASN1:FORMAT:BITLIST,BITSTRING:1,") == nullptr);
+    Require(Conf(83, "ASN1:FORMAT:BITLIST,BITSTRING:-1") == nullptr);
+    Require(Conf(83, "ASN1:FORMAT:BITLIST,BITSTRING:1x") == nullptr);
+    Require(Conf(83, "ASN1:FORMAT:BITLIST,BITSTRING:1 2") == nullptr);
+    Require(Conf(83, "ASN1:FORMAT:BITLIST,BITSTRING:+") == nullptr);
+    Require(Conf(83, "ASN1:FORMAT:BITLIST,BITSTRING:18446744073709551615") == nullptr);
+    Require(Conf(83, "ASN1:FORMAT:BITLIST,BITSTRING:18446744073709551616") == nullptr);
+    Require(Conf(83, "ASN1:FORMAT:BITLIST,BITSTRING:9223372036854775808") == nullptr);
+    Require(Conf(83, "ASN1:FORMAT:BITLIST,BITSTRING:") == nullptr);
+    CheckValue(Conf(83, "ASN1:FORMAT:BITLIST,BITSTRING:4294967296"), 83, 0, {0x03, 0x02, 0x07, 0x80});
+    std::vector<unsigned char> highest{0x03, 0x84, 0x10, 0x00, 0x00, 0x01, 0x00};
+    highest.resize(268435463, 0);
+    highest.back() = 0x01;
+    CheckValue(Conf(83, "ASN1:FORMAT:BITLIST,BITSTRING:2147483647"), 83, 0, highest);
+    CheckValue(Conf(83, "ASN1:FORMAT:BITLIST,BITSTRING:6442450943"), 83, 0, highest);
+    RequireNotImplemented([] { Conf(83, "ASN1:FORMAT:BITLIST,BITSTRING:4294967295"); });
+    RequireNotImplemented([] { Conf(83, "ASN1:FORMAT:BITLIST,BITSTRING:9223372036854775807"); });
+    RequireNotImplemented([] { Conf(83, "ASN1:FORMAT:BITLIST,BITSTRING:-9223372036854775809"); });
+    RequireNotImplemented([] { Conf(83, "ASN1:FORMAT:BITLIST,BITSTRING:1,4294967295"); });
+    RequireNotImplemented([] { Conf(83, "ASN1:FORMAT:BITLIST,BITSTRING:4294967289"); });
+    RequireNotImplemented([] { Conf(83, "ASN1:FORMAT:BITLIST,BITSTRING:9,4294967295"); });
+    RequireNotImplemented([] { Conf(83, "ASN1:FORMAT:BITLIST,BITSTRING:2147483648"); });
+    RequireNotImplemented([] { Conf(83, "ASN1:FORMAT:BITLIST,BITSTRING:4294967280"); });
+    RequireNotImplemented([] { Conf(83, "ASN1:FORMAT:BITLIST,BITSTRING:4294967280,1"); });
+    RequireNotImplemented([] { Conf(83, "ASN1:FORMAT:BITLIST,BITSTRING:4294967288"); });
+    RequireNotImplemented([] { Conf(83, "ASN1:FORMAT:BITLIST,BITSTRING:4294967281"); });
+    RequireNotImplemented([] { Conf(83, "ASN1:FORMAT:BITLIST,BITSTRING:1,4294967288"); });
+    RequireNotImplemented([] { Conf(83, "ASN1:FORMAT:BITLIST,BITSTRING:1,2147483648"); });
+    Require(allocations.empty());
 }
 
 void TestMalformed() {
@@ -231,6 +284,7 @@ int main() {
     ApplicationHeapRegister_nid_no_patch(api.data());
     TestDer();
     TestAsn1();
+    TestAsn1ValueRest();
     TestMalformed();
     TestUnknownNid();
     TestPlain();

@@ -541,7 +541,11 @@ bool ParseAsn1(std::string_view text, void* conf, Asn1Value& result) {
             if (colon == std::string_view::npos && (comma != std::string_view::npos || trimmed != end)) return false;
             result.type = type;
             result.format = format;
-            result.text.assign(value);
+            if (colon == std::string_view::npos) {
+                result.text.clear();
+            } else {
+                result.text.assign(text.substr(begin + colon + 1));
+            }
             return true;
         }
         if (name == "FORM" || name == "FORMAT") {
@@ -618,6 +622,56 @@ std::vector<unsigned char> IntegerContent(bool negative, const std::vector<unsig
     return content;
 }
 
+bool ParseBitNumber(std::string_view element, std::int32_t& bit) {
+    std::size_t index = 0;
+    bool negative = false;
+    if (element[index] == '+' || element[index] == '-') {
+        negative = element[index] == '-';
+        ++index;
+    }
+    if (index == element.size()) return false;
+    std::uint64_t number = 0;
+    bool overflow = false;
+    for (; index < element.size(); ++index) {
+        const char digit = element[index];
+        if (digit < '0' || digit > '9') return false;
+        const auto add = static_cast<std::uint64_t>(digit - '0');
+        if (number > (std::numeric_limits<std::uint64_t>::max() - add) / 10) {
+            overflow = true;
+        } else {
+            number = number * 10 + add;
+        }
+    }
+    if (overflow) {
+        number = std::numeric_limits<std::uint64_t>::max();
+    } else if (negative) {
+        number = 0 - number;
+    }
+    if (number > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) return false;
+    bit = static_cast<std::int32_t>(static_cast<std::uint32_t>(number));
+    return true;
+}
+
+bool ParseBitList(std::string_view text, std::vector<unsigned char>& bytes) {
+    std::size_t start = 0;
+    for (;;) {
+        while (start < text.size() && IsSpace(text[start])) ++start;
+        const std::size_t comma = text.find(',', start);
+        const std::size_t end = comma == std::string_view::npos ? text.size() : comma;
+        if (start == end) return false;
+        std::size_t trimmed = end;
+        while (trimmed > start && IsSpace(text[trimmed - 1])) --trimmed;
+        std::int32_t number = 0;
+        if (!ParseBitNumber(text.substr(start, trimmed - start), number)) return false;
+        if (number < 0) NotImplemented_nid_no_patch(__func__);
+        const std::size_t bit = static_cast<std::size_t>(number);
+        if (bytes.size() <= bit / 8) bytes.resize(bit / 8 + 1, 0);
+        bytes[bit / 8] |= static_cast<unsigned char>(0x80 >> (bit % 8));
+        if (comma == std::string_view::npos) return true;
+        start = comma + 1;
+    }
+}
+
 bool EncodeString(const Asn1Value& value, const std::string_view text, std::vector<unsigned char>& der) {
     switch (value.type) {
     case SimpleType::Boolean: {
@@ -665,18 +719,7 @@ bool EncodeString(const Asn1Value& value, const std::string_view text, std::vect
         } else if (value.format == Format::Ascii) {
             bytes.assign(text.begin(), text.end());
         } else if (value.format == Format::BitList && value.type == SimpleType::BitString) {
-            if (text.empty()) return false;
-            unsigned long long bit = 0;
-            for (const char digit : text) {
-                if (digit < '0' || digit > '9') return false;
-                if (bit > (std::numeric_limits<unsigned long long>::max() - 9) / 10) return false;
-                bit = bit * 10 + static_cast<unsigned long long>(digit - '0');
-            }
-            if (bit > static_cast<unsigned long long>(std::numeric_limits<std::size_t>::max() / 8)) return false;
-            const std::size_t size = static_cast<std::size_t>(bit) / 8 + 1;
-            bytes.assign(size, 0);
-            bytes[static_cast<std::size_t>(bit) / 8] |=
-                static_cast<unsigned char>(0x80 >> (static_cast<std::size_t>(bit) % 8));
+            if (!ParseBitList(text, bytes)) return false;
         } else {
             return false;
         }
