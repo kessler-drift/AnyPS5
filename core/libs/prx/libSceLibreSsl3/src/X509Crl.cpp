@@ -34,6 +34,9 @@ constexpr int MstringNotUniversal = 139;
 constexpr int MstringWrongTag = 140;
 constexpr int NullIsWrongLength = 144;
 constexpr int SequenceLengthMismatch = 148;
+constexpr int ExplicitLengthMismatch = 119;
+constexpr int ExplicitTagNotConstructed = 120;
+constexpr int NoMatchingChoiceType = 143;
 constexpr int SequenceNotConstructed = 149;
 constexpr int StringTooShort = 152;
 constexpr int TooLong = 155;
@@ -64,7 +67,17 @@ constexpr int BmpStringType = 30;
 constexpr int NegativeType = 0x100;
 
 constexpr int CrlReasonNid = 141;
+constexpr int CertificateIssuerNid = 771;
+constexpr int CrlReasonNone = -1;
 constexpr int CrlReasonRemoveFromCrl = 8;
+
+constexpr int OtherNameChoice = 0;
+constexpr int X400AddressChoice = 3;
+constexpr int DirectoryNameChoice = 4;
+constexpr int EdiPartyNameChoice = 5;
+constexpr int IpAddressChoice = 7;
+constexpr int RegisteredIdChoice = 8;
+constexpr unsigned char ContextClass = 0x80;
 
 constexpr std::int64_t BitsLeftFlag = 0x08;
 constexpr std::int64_t BitsLeftMask = 0x07;
@@ -395,6 +408,31 @@ void FreeRevokedElement(void* revoked) {
     FreeRevoked(static_cast<LibreSsl3Revoked*>(revoked));
 }
 
+void FreeGeneralName(void* element) {
+    auto* name = static_cast<LibreSslGeneralName*>(element);
+    if (!name) return;
+    if (name->type == DirectoryNameChoice) {
+        FreeName(static_cast<LibreSslX509Name*>(name->value));
+    } else if (name->type == RegisteredIdChoice) {
+        FreeObject(static_cast<const LibreSslAsn1Object*>(name->value));
+    } else {
+        FreeString(static_cast<Asn1String*>(name->value));
+    }
+    free_nid_postfix(name);
+}
+
+void FreeIssuers(const LibreSsl3Stack* revoked) {
+    if (!revoked || !revoked->data) return;
+    const LibreSsl3Stack* previous = nullptr;
+    for (int index = 0; index < revoked->num; ++index) {
+        auto* entry = static_cast<LibreSsl3Revoked*>(static_cast<void*>(revoked->data[index]));
+        if (!entry || !entry->issuer) continue;
+        if (entry->issuer != previous) FreeStack(entry->issuer, FreeGeneralName);
+        previous = entry->issuer;
+        entry->issuer = nullptr;
+    }
+}
+
 void FreeCrl(LibreSsl3X509Crl* crl) {
     if (!crl) return;
     LibreSsl3CrlInfo* info = crl->crl;
@@ -404,6 +442,7 @@ void FreeCrl(LibreSsl3X509Crl* crl) {
         FreeName(info->issuer);
         FreeString(info->lastUpdate);
         FreeString(info->nextUpdate);
+        FreeIssuers(info->revoked);
         FreeStack(info->revoked, FreeRevokedElement);
         FreeStack(info->extensions, FreeExtensionElement);
         free_nid_postfix(info);
@@ -471,13 +510,6 @@ int EnumeratedValue(const Asn1String* value) {
     return static_cast<int>(result);
 }
 
-int EntryReason(const LibreSsl3Stack* extensions) {
-    void* value = GetExtension(extensions, CrlReasonNid, nullptr, nullptr);
-    if (!value) return 0;
-    const int reason = EnumeratedValue(static_cast<const Asn1String*>(value));
-    FreeString(static_cast<Asn1String*>(value));
-    return reason;
-}
 
 bool IsStringTag(unsigned char tag) {
     for (const int candidate : StringTags) {
@@ -1314,7 +1346,6 @@ LibreSsl3Revoked* DecodeRevoked(std::span<const unsigned char>& input) {
         FreeRevoked(revoked);
         return nullptr;
     }
-    revoked->reason = EntryReason(revoked->extensions);
     return revoked;
 }
 
@@ -1379,6 +1410,137 @@ bool DecodeCrlInfo(std::span<const unsigned char> body, LibreSsl3CrlInfo* info) 
     return true;
 }
 
+void* DecodeDirectoryName(std::span<const unsigned char>& input, const Header& header) {
+    if (!(header.identifier & Constructed)) {
+        PutError(ExplicitTagNotConstructed);
+        return nullptr;
+    }
+    std::span<const unsigned char> body = input.subspan(header.headerLength, header.length);
+    LibreSslX509Name* name = DecodeName(body);
+    if (!name) return nullptr;
+    if (header.indefinite ? !IsEndOfContents(body) : !body.empty()) {
+        PutError(header.indefinite ? MissingEndOfContents : ExplicitLengthMismatch);
+        FreeName(name);
+        return nullptr;
+    }
+    if (header.indefinite) body = body.subspan(2);
+    input = input.subspan(Consumed(input, body));
+    return name;
+}
+
+LibreSslGeneralName* DecodeGeneralName(std::span<const unsigned char>& input) {
+    Header header;
+    if (const int reason = ReadHeader(input, header)) {
+        PutError(reason);
+        return nullptr;
+    }
+    const int type = static_cast<int>(header.number);
+    if ((header.identifier & ClassMask) != ContextClass || header.number > RegisteredIdChoice) {
+        PutError(NoMatchingChoiceType);
+        return nullptr;
+    }
+    if (type == OtherNameChoice || type == X400AddressChoice || type == EdiPartyNameChoice) {
+        if (!(header.identifier & Constructed)) {
+            PutError(type == X400AddressChoice ? TypeNotConstructed : SequenceNotConstructed);
+            return nullptr;
+        }
+        NotImplemented_nid_no_patch("X509_CRL: otherName, x400Address or ediPartyName certificate issuer");
+    }
+    auto* name = static_cast<LibreSslGeneralName*>(calloc_nid_postfix(1, sizeof(LibreSslGeneralName)));
+    if (!name) {
+        PutError(MallocFailure);
+        return nullptr;
+    }
+    name->type = type;
+    std::span<const unsigned char> rest = input;
+    std::vector<unsigned char> collected;
+    std::span<const unsigned char> content;
+    if (type == DirectoryNameChoice) {
+        name->value = DecodeDirectoryName(rest, header);
+    } else if (const int reason = ReadPrimitiveContent(rest, header, collected, content)) {
+        PutError(reason);
+    } else if (type == RegisteredIdChoice) {
+        name->value = NewObject(content);
+    } else {
+        name->value = NewString(type == IpAddressChoice ? OctetStringType : Ia5StringType, content);
+    }
+    if (!name->value) {
+        FreeGeneralName(name);
+        return nullptr;
+    }
+    input = rest;
+    return name;
+}
+
+LibreSsl3Stack* DecodeGeneralNames(std::span<const unsigned char> input) {
+    Header header;
+    if (const int reason = ReadHeader(input, header)) {
+        PutError(reason);
+        return nullptr;
+    }
+    if (!IsUniversal(header, SequenceType)) {
+        PutError(WrongTag);
+        return nullptr;
+    }
+    LibreSsl3Stack* names = NewStack();
+    if (!names) return nullptr;
+    std::span<const unsigned char> body = input.subspan(header.headerLength, header.length);
+    bool expectEnd = header.indefinite;
+    while (!body.empty()) {
+        if (IsEndOfContents(body)) {
+            if (expectEnd) {
+                expectEnd = false;
+                break;
+            }
+            PutError(UnexpectedEndOfContents);
+            FreeStack(names, FreeGeneralName);
+            return nullptr;
+        }
+        LibreSslGeneralName* name = DecodeGeneralName(body);
+        if (!name || !Push(names, name)) {
+            FreeGeneralName(name);
+            FreeStack(names, FreeGeneralName);
+            return nullptr;
+        }
+    }
+    if (expectEnd) {
+        PutError(MissingEndOfContents);
+        FreeStack(names, FreeGeneralName);
+        return nullptr;
+    }
+    return names;
+}
+
+const LibreSsl3X509Extension* SingleExtension(const LibreSsl3Stack* extensions, int nid, bool& repeated) {
+    const LibreSslAsn1Object* object = LibreSsl3::ObjectByNid(nid);
+    const int position = object ? FindExtension(extensions, object, -1) : -1;
+    repeated = position >= 0 && FindExtension(extensions, object, position) >= 0;
+    if (position < 0 || repeated) return nullptr;
+    return static_cast<const LibreSsl3X509Extension*>(static_cast<const void*>(extensions->data[position]));
+}
+
+void SetIssuers(const LibreSsl3Stack* revoked) {
+    if (!revoked) return;
+    const LibreSsl3Stack* issuer = nullptr;
+    for (int index = 0; index < revoked->num; ++index) {
+        auto* entry = static_cast<LibreSsl3Revoked*>(static_cast<void*>(revoked->data[index]));
+        bool repeated = false;
+        const LibreSsl3X509Extension* extension = SingleExtension(entry->extensions, CertificateIssuerNid, repeated);
+        if (repeated) return;
+        if (extension) {
+            const auto* value = static_cast<const Asn1String*>(extension->value);
+            issuer = DecodeGeneralNames({value->data, static_cast<std::size_t>(value->length)});
+            if (!issuer) return;
+        }
+        entry->issuer = issuer;
+        int critical = -1;
+        void* reason = GetExtension(entry->extensions, CrlReasonNid, &critical, nullptr);
+        if (!reason && critical != -1) return;
+        entry->reason = reason ? EnumeratedValue(static_cast<const Asn1String*>(reason)) : CrlReasonNone;
+        FreeString(static_cast<Asn1String*>(reason));
+    }
+}
+
 LibreSsl3X509Crl* DecodeCrl(std::span<const unsigned char>& input) {
     Tlv outer;
     if (!Next(input, SequenceTag, outer)) return nullptr;
@@ -1423,6 +1585,7 @@ LibreSsl3X509Crl* DecodeCrl(std::span<const unsigned char>& input) {
         FreeCrl(crl);
         return nullptr;
     }
+    SetIssuers(crl->crl->revoked);
     return crl;
 }
 
@@ -1450,9 +1613,16 @@ bool SameName(const LibreSslX509Name* first, const LibreSslX509Name* second) {
 
 bool IssuerMatches(const LibreSslX509Name* crlIssuer, const LibreSslX509Name* certificateIssuer,
     const LibreSsl3Revoked* revoked) {
-    if (revoked->issuer) NotImplemented_nid_no_patch("X509_CRL_get0_by_cert");
-    if (!certificateIssuer) return true;
-    return SameName(certificateIssuer, crlIssuer);
+    if (!revoked->issuer) return !certificateIssuer || SameName(certificateIssuer, crlIssuer);
+    const LibreSslX509Name* name = certificateIssuer ? certificateIssuer : crlIssuer;
+    const LibreSsl3Stack* names = revoked->issuer;
+    for (int index = 0; index < names->num; ++index) {
+        if (!names->data) throw std::invalid_argument("X509_CRL_get0_by_cert: null issuer array");
+        const auto* general = static_cast<const LibreSslGeneralName*>(static_cast<const void*>(names->data[index]));
+        if (!general) throw std::invalid_argument("X509_CRL_get0_by_cert: null issuer name");
+        if (general->type == DirectoryNameChoice && SameName(name, static_cast<const LibreSslX509Name*>(general->value))) return true;
+    }
+    return false;
 }
 
 }

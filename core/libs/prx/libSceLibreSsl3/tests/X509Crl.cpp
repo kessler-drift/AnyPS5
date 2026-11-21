@@ -437,7 +437,7 @@ void TestParsedStructure() {
     RequireString(first->revocationDate, 23, "240102000000Z");
     Require(first->extensions == nullptr);
     Require(first->issuer == nullptr);
-    Require(first->reason == 0);
+    Require(first->reason == -1);
     const LibreSsl3Revoked* second = RevokedEntryAt(crl, 1);
     Require(second != nullptr);
     RequireInteger(second->serialNumber, {0x10, 0x02});
@@ -1235,6 +1235,154 @@ void TestGet0ByCertCanonicalIssuer() {
 
 }
 
+Bytes CertificateIssuerExtension(const Bytes& names) {
+    return Extension({0x55, 0x1d, 0x1d}, false, names);
+}
+
+Bytes DirectoryName(const char* commonName) {
+    return Tlv(0xa4, IssuerName(commonName));
+}
+
+Bytes RevokedEntries(std::initializer_list<Bytes> entries) {
+    return BuildCrl(Join({TbsHead(), Tlv(0x30, Join(entries))}));
+}
+
+int LookupSerial(LibreSsl3X509Crl* crl, unsigned char low, const LibreSslX509Name* issuer, LibreSsl3Revoked** found = nullptr) {
+    Serial serial(low);
+    LibreSsl3CertificateInfo info{};
+    LibreSsl3Certificate certificate{};
+    SetCertificate(certificate, info, &serial.value, issuer);
+    return X509_CRL_get0_by_cert_nid_postfix(crl, found, &certificate);
+}
+
+void TestCertificateIssuers() {
+    LibreSsl3X509Crl* other = Parse(CrlWithIssuer(IssuerName("Other CA")));
+    LibreSsl3X509Crl* third = Parse(CrlWithIssuer(IssuerName("Third CA")));
+    Require(other != nullptr && third != nullptr);
+    const LibreSslX509Name* b = other->crl->issuer;
+    const LibreSslX509Name* c = third->crl->issuer;
+
+    LibreSsl3X509Crl* crl = Parse(RevokedEntries({
+        RevokedEntryWithExtensions(Bytes{0x10, 0x01}, CertificateIssuerExtension(Sequence({DirectoryName("Other CA")}))),
+        RevokedEntry(Bytes{0x10, 0x02}),
+    }));
+    Require(crl != nullptr);
+    const LibreSslX509Name* a = crl->crl->issuer;
+    const LibreSsl3Revoked* first = RevokedEntryAt(crl, 0);
+    Require(first->issuer != nullptr && first->issuer->num == 1 && RevokedEntryAt(crl, 1)->issuer == first->issuer);
+    const auto* general = reinterpret_cast<const LibreSslGeneralName*>(first->issuer->data[0]);
+    Require(general->type == 4 && static_cast<const LibreSslX509Name*>(general->value)->canonEnc != nullptr);
+    Require(first->reason == -1);
+    LibreSsl3Revoked* found = nullptr;
+    Require(LookupSerial(crl, 0x01, b, &found) == 1 && found == first);
+    Require(LookupSerial(crl, 0x01, a) == 0 && LookupSerial(crl, 0x01, nullptr) == 0);
+    Require(LookupSerial(crl, 0x02, b) == 1 && LookupSerial(crl, 0x02, a) == 0);
+    FreeCrlValue(crl);
+
+    crl = Parse(RevokedEntries({
+        RevokedEntryWithExtensions(Bytes{0x10, 0x01}, Join({
+            CertificateIssuerExtension(Sequence({Tlv(0x82, Ascii("crl.example")), DirectoryName("Third CA"), DirectoryName("Other CA")})),
+            CrlReasonExtension(8),
+        })),
+        RevokedEntryWithExtensions(Bytes{0x10, 0x02}, CertificateIssuerExtension(Sequence({Tlv(0x82, Ascii("crl.example"))}))),
+        RevokedEntryWithExtensions(Bytes{0x10, 0x03}, CertificateIssuerExtension(Sequence({DirectoryName("Test CA")}))),
+    }));
+    Require(crl != nullptr);
+    a = crl->crl->issuer;
+    Require(RevokedEntryAt(crl, 0)->issuer->num == 3 && RevokedEntryAt(crl, 0)->reason == 8);
+    Require(LookupSerial(crl, 0x01, b) == 2 && LookupSerial(crl, 0x01, c) == 2 && LookupSerial(crl, 0x01, a) == 0);
+    Require(LookupSerial(crl, 0x02, a) == 0 && LookupSerial(crl, 0x02, nullptr) == 0);
+    Require(LookupSerial(crl, 0x03, a) == 1 && LookupSerial(crl, 0x03, nullptr) == 1 && LookupSerial(crl, 0x03, b) == 0);
+    FreeCrlValue(crl);
+
+    crl = Parse(RevokedEntries({
+        RevokedEntryWithExtensions(Bytes{0x10, 0x01}, CertificateIssuerExtension(Sequence({Tlv(0x02, Bytes{0x01})}))),
+        RevokedEntryWithExtensions(Bytes{0x10, 0x02}, CrlReasonExtension(8)),
+    }));
+    Require(crl != nullptr);
+    a = crl->crl->issuer;
+    Require(RevokedEntryAt(crl, 0)->issuer == nullptr && RevokedEntryAt(crl, 1)->reason == 0);
+    Require(LookupSerial(crl, 0x01, a) == 1 && LookupSerial(crl, 0x01, b) == 0 && LookupSerial(crl, 0x02, a) == 1);
+    FreeCrlValue(crl);
+    DrainErrors();
+
+    crl = Parse(RevokedEntries({
+        RevokedEntryWithExtensions(Bytes{0x10, 0x01}, CertificateIssuerExtension(Sequence({DirectoryName("Other CA")}))),
+        RevokedEntryWithExtensions(Bytes{0x10, 0x02}, Join({
+            CertificateIssuerExtension(Sequence({DirectoryName("Other CA")})),
+            CertificateIssuerExtension(Sequence({DirectoryName("Third CA")})),
+        })),
+    }));
+    Require(crl != nullptr && RevokedEntryAt(crl, 1)->issuer == nullptr && RevokedEntryAt(crl, 1)->reason == 0);
+    Require(LookupSerial(crl, 0x01, b) == 1 && LookupSerial(crl, 0x02, crl->crl->issuer) == 1 && LookupSerial(crl, 0x02, b) == 0);
+    FreeCrlValue(crl);
+
+    crl = Parse(RevokedEntries({RevokedEntryWithExtensions(Bytes{0x10, 0x01},
+        CertificateIssuerExtension(Sequence({Tlv(0xa4, Join({IssuerName("Other CA"), Tlv(0x82, Ascii("x"))}))})))}));
+    Require(crl != nullptr && RevokedEntryAt(crl, 0)->issuer == nullptr);
+    Require(LookupSerial(crl, 0x01, crl->crl->issuer) == 1 && LookupSerial(crl, 0x01, b) == 0);
+    FreeCrlValue(crl);
+    DrainErrors();
+
+    crl = Parse(RevokedEntries({
+        RevokedEntryWithExtensions(Bytes{0x10, 0x01}, CrlReasonExtension(8)),
+        RevokedEntryWithExtensions(Bytes{0x10, 0x02}, Extension({0x55, 0x1d, 0x15}, false, Tlv(0x05, Bytes{}))),
+        RevokedEntryWithExtensions(Bytes{0x10, 0x03}, CrlReasonExtension(8)),
+    }));
+    Require(crl != nullptr);
+    Require(LookupSerial(crl, 0x01, nullptr) == 2 && LookupSerial(crl, 0x02, nullptr) == 1 && LookupSerial(crl, 0x03, nullptr) == 1);
+    FreeCrlValue(crl);
+    DrainErrors();
+
+    const struct {
+        Bytes names;
+        bool accepted;
+    } forms[] = {
+        {Tlv(0x10, DirectoryName("Other CA")), true},
+        {Join({Sequence({DirectoryName("Other CA")}), Bytes{0xde, 0xad}}), true},
+        {Sequence({Tlv(0xa2, Join({Tlv(0x04, Ascii("x.")), Tlv(0x16, Ascii("org"))})), DirectoryName("Other CA")}), true},
+        {Sequence({Tlv(0xa8, Join({Tlv(0x04, Bytes{0x2a}), Tlv(0x04, Bytes{0x03})})), DirectoryName("Other CA")}), true},
+        {Sequence({Tlv(0x84, IssuerName("Other CA"))}), false},
+        {Sequence({Bytes{0x00, 0x00}, DirectoryName("Other CA")}), false},
+        {Sequence({Tlv(0x88, Bytes{0x2a, 0x83})}), false},
+        {Sequence({Tlv(0x89, Bytes{0x78}), DirectoryName("Other CA")}), false},
+        {Sequence({Tlv(0x80, Bytes{0x06, 0x01, 0x2a}), DirectoryName("Other CA")}), false},
+    };
+    for (const auto& form : forms) {
+        crl = Parse(RevokedEntries({
+            RevokedEntryWithExtensions(Bytes{0x10, 0x01}, CertificateIssuerExtension(form.names)),
+            RevokedEntryWithExtensions(Bytes{0x10, 0x02}, CrlReasonExtension(8)),
+        }));
+        Require(crl != nullptr);
+        a = crl->crl->issuer;
+        Require(LookupSerial(crl, 0x01, b) == (form.accepted ? 1 : 0) && LookupSerial(crl, 0x01, a) == (form.accepted ? 0 : 1));
+        Require(form.accepted ? LookupSerial(crl, 0x02, b) == 2 : LookupSerial(crl, 0x02, a) == 1);
+        FreeCrlValue(crl);
+        DrainErrors();
+    }
+
+    crl = Parse(RevokedEntries({
+        RevokedEntryWithExtensions(Bytes{0x10, 0x01}, CertificateIssuerExtension(Sequence({DirectoryName("Other CA")}))),
+        RevokedEntryWithExtensions(Bytes{0x10, 0x02}, Extension({0x55, 0x1d, 0x15}, false, Tlv(0x02, Bytes{0x08}))),
+        RevokedEntryWithExtensions(Bytes{0x10, 0x03}, CrlReasonExtension(8)),
+    }));
+    Require(crl != nullptr && RevokedEntryAt(crl, 1)->issuer == RevokedEntryAt(crl, 0)->issuer && RevokedEntryAt(crl, 1)->reason == 0);
+    Require(LookupSerial(crl, 0x02, b) == 1 && LookupSerial(crl, 0x02, crl->crl->issuer) == 0 && LookupSerial(crl, 0x03, crl->crl->issuer) == 1);
+    FreeCrlValue(crl);
+    DrainErrors();
+    FreeCrlValue(other);
+    FreeCrlValue(third);
+    Require(allocations.empty());
+
+    RequireNotImplemented([] {
+        Parse(RevokedEntries({RevokedEntryWithExtensions(Bytes{0x10, 0x01},
+            CertificateIssuerExtension(Sequence({Tlv(0xa0, Join({Oid({0x2a, 0x03}), Tlv(0xa0, Tlv(0x0c, Ascii("u")))}))})))}));
+    });
+    DrainErrors();
+    for (const auto& [pointer, size] : allocations) std::free(pointer);
+    allocations.clear();
+}
+
 int main() {
     std::array<void*, 10> api{
         reinterpret_cast<void*>(Allocate_nid_no_patch),
@@ -1265,6 +1413,7 @@ int main() {
     TestNameStructures();
     TestLongFormTags();
     TestGet0ByCertCanonicalIssuer();
+    TestCertificateIssuers();
     Require(allocations.empty());
     std::puts("libSceLibreSsl3 X509_CRL tests passed");
 }
