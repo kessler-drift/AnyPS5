@@ -139,11 +139,18 @@ bool ItemByIndex(const std::uint8_t* root, std::uint32_t resource, std::int32_t 
     return false;
 }
 
+void UpdateStatus(std::int32_t* status, std::int32_t incoming, UErrorCode outgoing, int savedErrno, const char* caller) {
+    const std::int32_t code = static_cast<std::int32_t>(outgoing);
+    if (code != incoming) CopyOut(status, &code, sizeof(code), savedErrno, caller);
+}
+
 const char* ToUtf8(const std::vector<char16_t>& units, char* dest, std::int32_t* length, std::int8_t forceCopy,
     std::int32_t* status, int savedErrno, const char* caller) {
     std::int32_t capacity = 0;
     if (length) CopyIn(&capacity, length, sizeof(capacity), savedErrno, caller);
     if (capacity < 0 || (capacity > 0 && !dest)) return Fail(status, IllegalArgument, savedErrno, caller);
+    std::int32_t incoming = 0;
+    CopyIn(&incoming, status, sizeof(incoming), savedErrno, caller);
     if (units.empty()) {
         const std::int32_t zero = 0;
         if (length) CopyOut(length, &zero, sizeof(zero), savedErrno, caller);
@@ -151,44 +158,43 @@ const char* ToUtf8(const std::vector<char16_t>& units, char* dest, std::int32_t*
         if (capacity > 0) {
             const char terminator = 0;
             CopyOut(dest, &terminator, sizeof(terminator), savedErrno, caller);
+            if (incoming == StringNotTerminated) UpdateStatus(status, incoming, U_ZERO_ERROR, savedErrno, caller);
         } else {
             CopyOut(status, &StringNotTerminated, sizeof(StringNotTerminated), savedErrno, caller);
         }
         return dest;
     }
-    if (capacity < static_cast<std::int32_t>(units.size())) {
-        std::int32_t utf8Length = 0;
-        UErrorCode hostStatus = U_ZERO_ERROR;
-        u_strToUTF8(nullptr, 0, &utf8Length, reinterpret_cast<const UChar*>(units.data()),
-            static_cast<std::int32_t>(units.size()), &hostStatus);
+    const auto* source = reinterpret_cast<const UChar*>(units.data());
+    const auto count = static_cast<std::int32_t>(units.size());
+    std::int32_t utf8Length = capacity;
+    UErrorCode hostStatus = static_cast<UErrorCode>(incoming);
+    if (capacity < count) {
+        u_strToUTF8(nullptr, 0, length ? &utf8Length : nullptr, source, count, &hostStatus);
         if (length) CopyOut(length, &utf8Length, sizeof(utf8Length), savedErrno, caller);
-        return Fail(status, BufferOverflow, savedErrno, caller);
+        UpdateStatus(status, incoming, hostStatus, savedErrno, caller);
+        return nullptr;
     }
     std::int32_t writeCapacity = capacity;
     std::size_t offset = 0;
     if (!forceCopy && units.size() <= 0x2aaaaaaa) {
-        const std::int32_t maximum = 3 * static_cast<std::int32_t>(units.size()) + 1;
+        const std::int32_t maximum = 3 * count + 1;
         if (capacity > maximum) {
             offset = static_cast<std::size_t>(capacity - maximum);
             writeCapacity = maximum;
         }
     }
-    std::vector<char> buffer(static_cast<std::size_t>(writeCapacity));
-    std::int32_t utf8Length = 0;
-    UErrorCode hostStatus = U_ZERO_ERROR;
-    u_strToUTF8(buffer.data(), writeCapacity, &utf8Length, reinterpret_cast<const UChar*>(units.data()),
-        static_cast<std::int32_t>(units.size()), &hostStatus);
-    const std::int32_t copied = utf8Length < writeCapacity ? utf8Length + 1 : writeCapacity;
-    const bool wrote = hostStatus == U_ZERO_ERROR || static_cast<std::int32_t>(hostStatus) == StringNotTerminated;
-    if (wrote && copied > 0) {
-        CopyOut(dest + offset, buffer.data(), static_cast<std::size_t>(copied), savedErrno, caller);
-    }
-    if (length) CopyOut(length, &utf8Length, sizeof(utf8Length), savedErrno, caller);
-    if (hostStatus != U_ZERO_ERROR) {
-        const std::int32_t code = static_cast<std::int32_t>(hostStatus);
-        CopyOut(status, &code, sizeof(code), savedErrno, caller);
-    }
-    return dest + offset;
+    std::vector<char> low(static_cast<std::size_t>(writeCapacity), 0);
+    std::vector<char> high(static_cast<std::size_t>(writeCapacity), static_cast<char>(0xff));
+    std::int32_t highLength = capacity;
+    UErrorCode highStatus = hostStatus;
+    u_strToUTF8(high.data(), writeCapacity, &highLength, source, count, &highStatus);
+    const char* converted = u_strToUTF8(low.data(), writeCapacity, &utf8Length, source, count, &hostStatus);
+    std::size_t written = 0;
+    while (written < low.size() && low[written] == high[written]) ++written;
+    if (written > 0) CopyOut(dest + offset, low.data(), written, savedErrno, caller);
+    CopyOut(length, &utf8Length, sizeof(utf8Length), savedErrno, caller);
+    UpdateStatus(status, incoming, hostStatus, savedErrno, caller);
+    return converted ? dest + offset : nullptr;
 }
 
 }

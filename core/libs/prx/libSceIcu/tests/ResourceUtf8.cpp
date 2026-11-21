@@ -51,6 +51,9 @@ int main() {
     pool[97] = 0;
     pool[98] = 'b';
     pool[99] = 0;
+    StoreInt32(pool, 136, 2);
+    StoreUInt16(pool, 140, u'a');
+    StoreUInt16(pool, 142, 0xd800);
     StoreInt32(pool, 104, 2);
     StoreUInt16(pool, 108, 0x00ff);
     StoreUInt16(pool, 110, 0x00ff);
@@ -66,6 +69,12 @@ int main() {
     StoreUInt32(emptyBundle, ResourceOffset, 10u);
     StoreInt32(emptyBundle, SizeOffset, 1);
     auto* emptyResource = reinterpret_cast<UResourceBundle*>(emptyBundle);
+
+    alignas(8) std::uint8_t surrogateBundle[BundleSize] = {};
+    std::memcpy(surrogateBundle + 48, &root, sizeof(root));
+    StoreUInt32(surrogateBundle, ResourceOffset, 34u);
+    StoreInt32(surrogateBundle, SizeOffset, 1);
+    auto* surrogateResource = reinterpret_cast<UResourceBundle*>(surrogateBundle);
 
     alignas(8) std::uint8_t arrayBundle[BundleSize] = {};
     std::memcpy(arrayBundle + 48, &root, sizeof(root));
@@ -117,8 +126,34 @@ int main() {
     length = 2;
     char tooSmall[4] = {'z', 'z', 'z', 'z'};
     result = ures_getUTF8String_nid_postfix(multibyteResource, tooSmall, &length, 1, &status);
-    Require(result == tooSmall && status == 15 && length == 4 && tooSmall[0] == 'z' && tooSmall[3] == 'z',
-        "ures_getUTF8String wrote into a buffer it could not fill");
+    Require(result == tooSmall && status == 15 && length == 4 && tooSmall[0] == '\xc3' && tooSmall[1] == '\xbf' &&
+            tooSmall[2] == 'z' && tooSmall[3] == 'z',
+        "ures_getUTF8String did not write the characters that fit");
+
+    status = -124;
+    length = 8;
+    result = ures_getUTF8String_nid_postfix(stringResource, destination, &length, 1, &status);
+    Require(result == destination && status == 0 && length == 2 && destination[2] == 0,
+        "ures_getUTF8String kept the not-terminated warning after terminating the string");
+
+    status = -128;
+    length = 8;
+    result = ures_getUTF8String_nid_postfix(stringResource, destination, &length, 1, &status);
+    Require(result == destination && status == -128 && length == 2,
+        "ures_getUTF8String dropped the caller's warning");
+
+    status = 0;
+    length = 4;
+    char invalid[4] = {'z', 'z', 'z', 'z'};
+    result = ures_getUTF8String_nid_postfix(surrogateResource, invalid, &length, 1, &status);
+    Require(result == nullptr && status == 10 && length == 4 && invalid[0] == 'a' && invalid[1] == 'z',
+        "ures_getUTF8String did not stop at an unpaired surrogate");
+
+    status = 0;
+    length = 1;
+    result = ures_getUTF8String_nid_postfix(surrogateResource, invalid, &length, 1, &status);
+    Require(result == nullptr && status == 10 && length == 1,
+        "ures_getUTF8String did not report an unpaired surrogate while preflighting");
 
     status = 0;
     length = 0;
@@ -132,6 +167,12 @@ int main() {
     result = ures_getUTF8String_nid_postfix(emptyResource, empty, &length, 1, &status);
     Require(result == empty && status == 0 && length == 0 && empty[0] == 0,
         "ures_getUTF8String did not terminate the empty string");
+
+    status = -124;
+    length = 4;
+    result = ures_getUTF8String_nid_postfix(emptyResource, empty, &length, 1, &status);
+    Require(result == empty && status == 0 && length == 0 && empty[0] == 0,
+        "ures_getUTF8String kept the not-terminated warning after terminating the empty string");
 
     status = 0;
     length = 4;
