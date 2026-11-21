@@ -98,6 +98,9 @@ constexpr unsigned char VersionTag = 0xa0;
 constexpr unsigned char IssuerUniqueIdTag = 0x81;
 constexpr unsigned char SubjectUniqueIdTag = 0x82;
 constexpr unsigned char ExtensionsTag = 0xa3;
+constexpr unsigned char Utf8StringTag = 0x0c;
+constexpr unsigned char RejectTag = 0xa0;
+constexpr unsigned char OtherTag = 0xa1;
 
 constexpr int StringTags[] = {12, 18, 19, 20, 21, 22, 26, 27, 28, 30};
 constexpr std::uint64_t NameValueTags[] = {3, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 19, 20, 22, 28, 29, 30};
@@ -115,13 +118,23 @@ struct NameBuffer {
     std::size_t max;
 };
 
+struct CertificateAux {
+    LibreSsl3Stack* trust;
+    LibreSsl3Stack* reject;
+    Asn1String* alias;
+    Asn1String* keyid;
+    LibreSsl3Stack* other;
+};
+
 struct CertificateObject {
     LibreSsl3CertificateInfo* certInfo;
     LibreSsl3X509Algor* sigAlg;
     LibreSsl3Asn1String* signature;
     std::int32_t valid;
     std::int32_t references;
-    unsigned char rest[184];
+    unsigned char extensionCache[136];
+    CertificateAux* aux;
+    unsigned char rest[40];
 };
 
 struct DirectoryList {
@@ -140,6 +153,8 @@ static_assert(offsetof(LibreSsl3CertificateInfo, encoding) == 80);
 static_assert(sizeof(CertificateObject) == sizeof(LibreSsl3Certificate));
 static_assert(offsetof(CertificateObject, signature) == 16);
 static_assert(offsetof(CertificateObject, references) == 28);
+static_assert(offsetof(CertificateObject, aux) == 168);
+static_assert(sizeof(CertificateAux) == 40);
 static_assert(sizeof(DirectoryList) == 8);
 static_assert(sizeof(LibreSslX509NameEntry) == 24);
 static_assert(sizeof(LibreSslX509Name) == 40);
@@ -395,8 +410,27 @@ void FreeCertificateInfo(LibreSsl3CertificateInfo* info) {
     free_nid_postfix(info);
 }
 
+void FreeObjectElement(void* element) {
+    FreeObject(static_cast<const LibreSslAsn1Object*>(element));
+}
+
+void FreeAlgorElement(void* element) {
+    FreeAlgor(static_cast<LibreSsl3X509Algor*>(element));
+}
+
+void FreeAux(CertificateAux* aux) {
+    if (!aux) return;
+    FreeStack(aux->trust, FreeObjectElement);
+    FreeStack(aux->reject, FreeObjectElement);
+    FreeString(aux->alias);
+    FreeString(aux->keyid);
+    FreeStack(aux->other, FreeAlgorElement);
+    free_nid_postfix(aux);
+}
+
 void FreeCertificate(CertificateObject* certificate) {
     if (!certificate) return;
+    FreeAux(certificate->aux);
     FreeCertificateInfo(certificate->certInfo);
     FreeAlgor(certificate->sigAlg);
     FreeString(reinterpret_cast<Asn1String*>(certificate->signature));
@@ -1394,6 +1428,93 @@ CertificateObject* DecodeCertificate(std::span<const unsigned char>& input) {
     return certificate;
 }
 
+bool HasNumber(const Tlv& value, unsigned char tag) {
+    if ((value.tag | Constructed) == (tag | Constructed)) return true;
+    PutAsn1Error(WrongTag);
+    return false;
+}
+
+bool PrimitiveContent(const Tlv& value, std::vector<unsigned char>& collected, std::span<const unsigned char>& data) {
+    data = value.content;
+    if (!(value.tag & Constructed)) return true;
+    std::span<const unsigned char> rest = ExplicitContent(value);
+    if (const int reason = CollectString(rest, value.indefinite, 0, collected)) {
+        PutAsn1Error(reason);
+        return false;
+    }
+    data = collected;
+    return true;
+}
+
+LibreSsl3Stack* DecodeAuxList(const Tlv& list, bool objects) {
+    LibreSsl3Stack* stack = NewStack();
+    if (!stack) return nullptr;
+    void (*release)(void*) = objects ? FreeObjectElement : FreeAlgorElement;
+    std::span<const unsigned char> content = list.content;
+    while (!content.empty()) {
+        void* element = nullptr;
+        Tlv object;
+        std::vector<unsigned char> collected;
+        std::span<const unsigned char> data;
+        if (!objects) {
+            element = DecodeAlgor(content);
+        } else if (ReadTlv(content, object) && HasNumber(object, ObjectTag) && PrimitiveContent(object, collected, data)) {
+            element = NewObject(data);
+        }
+        if (!element || !Push(stack, element)) {
+            release(element);
+            FreeStack(stack, release);
+            return nullptr;
+        }
+    }
+    return stack;
+}
+
+Asn1String* DecodeAuxString(const Tlv& value, int type) {
+    std::vector<unsigned char> collected;
+    std::span<const unsigned char> data;
+    if (!PrimitiveContent(value, collected, data)) return nullptr;
+    return NewString(type, data);
+}
+
+bool AuxFieldFollows(std::span<const unsigned char> body, unsigned char tag) {
+    return !body.empty() && (PeekTag(body) | Constructed) == (tag | Constructed);
+}
+
+CertificateAux* DecodeAux(std::span<const unsigned char> input) {
+    Tlv sequence;
+    if (!ReadElement(input, sequence) || !HasTag(sequence, SequenceTag)) return nullptr;
+    auto* aux = static_cast<CertificateAux*>(calloc_nid_postfix(1, sizeof(CertificateAux)));
+    if (!aux) {
+        PutAsn1Error(MallocFailure);
+        return nullptr;
+    }
+    std::span<const unsigned char> body = sequence.content;
+    Tlv field;
+    bool valid = true;
+    if (AuxFieldFollows(body, SequenceTag))
+        valid = ReadTlv(body, field) && (aux->trust = DecodeAuxList(field, true)) != nullptr;
+    if (valid && AuxFieldFollows(body, RejectTag))
+        valid = ReadTlv(body, field) && (aux->reject = DecodeAuxList(field, true)) != nullptr;
+    if (valid && AuxFieldFollows(body, Utf8StringTag))
+        valid = ReadTlv(body, field) && (aux->alias = DecodeAuxString(field, Utf8StringType)) != nullptr;
+    if (valid && AuxFieldFollows(body, OctetStringTag))
+        valid = ReadTlv(body, field) && (aux->keyid = DecodeAuxString(field, OctetStringType)) != nullptr;
+    if (valid && !body.empty()) {
+        valid = ReadTlv(body, field) && HasNumber(field, OtherTag) &&
+            (aux->other = DecodeAuxList(field, false)) != nullptr;
+    }
+    if (valid && !body.empty()) {
+        PutAsn1Error(sequence.indefinite ? MissingEndOfContents : SequenceLengthMismatch);
+        valid = false;
+    }
+    if (!valid) {
+        FreeAux(aux);
+        return nullptr;
+    }
+    return aux;
+}
+
 bool NextLine(const std::string& text, std::size_t& position, std::string& line) {
     if (position >= text.size()) return false;
     std::size_t end = text.find('\n', position);
@@ -1438,8 +1559,13 @@ bool IsCertificateLabel(const std::string& label) {
     return label == "CERTIFICATE" || label == "X509 CERTIFICATE" || label == "TRUSTED CERTIFICATE";
 }
 
-std::vector<std::vector<unsigned char>> ReadPemCertificates(const std::string& text, bool& malformed) {
-    std::vector<std::vector<unsigned char>> certificates;
+struct PemCertificate {
+    std::vector<unsigned char> bytes;
+    bool trusted;
+};
+
+std::vector<PemCertificate> ReadPemCertificates(const std::string& text, bool& malformed) {
+    std::vector<PemCertificate> certificates;
     malformed = false;
     std::size_t position = 0;
     std::string line;
@@ -1467,7 +1593,7 @@ std::vector<std::vector<unsigned char>> ReadPemCertificates(const std::string& t
             malformed = true;
             return certificates;
         }
-        certificates.push_back(std::move(encoded));
+        certificates.push_back({std::move(encoded), label == "TRUSTED CERTIFICATE"});
     }
     return certificates;
 }
@@ -1489,16 +1615,23 @@ bool ReadFile(const char* path, std::string& contents) {
     return readable;
 }
 
-int LoadCertificates(LibreSslX509Store* store, const char* path) {
+int LoadCertificates(LibreSslX509Store* store, const char* path, bool everyRecordAuxiliary) {
     std::string contents;
     if (!ReadFile(path, contents)) return 0;
     bool malformed = false;
-    const std::vector<std::vector<unsigned char>> certificates = ReadPemCertificates(contents, malformed);
+    const std::vector<PemCertificate> certificates = ReadPemCertificates(contents, malformed);
     int count = 0;
-    for (const auto& bytes : certificates) {
-        std::span<const unsigned char> input(bytes);
+    for (const auto& record : certificates) {
+        std::span<const unsigned char> input(record.bytes);
         CertificateObject* certificate = DecodeCertificate(input);
         if (!certificate) return 0;
+        if ((everyRecordAuxiliary || record.trusted) && !input.empty()) {
+            certificate->aux = DecodeAux(input);
+            if (!certificate->aux) {
+                FreeCertificate(certificate);
+                return 0;
+            }
+        }
         int added = 0;
         try {
             added = X509_STORE_add_cert_nid_postfix(
@@ -1634,7 +1767,7 @@ int APS5_VABI DirectoryBySubject(LibreSslX509Lookup* lookup, int type, LibreSslX
             const int length = std::snprintf(path, sizeof(path), "%s/%08lx.%d", directory.c_str(), hash, suffix);
             if (length < 0 || static_cast<std::size_t>(length) >= sizeof(path))
                 throw std::overflow_error("X509_LOOKUP_hash_dir: hashed file path is too long");
-            if (LoadCertificates(lookup->storeContext, path) == 0) break;
+            if (LoadCertificates(lookup->storeContext, path, true) == 0) break;
         }
         LibreSslX509Object found{};
         if (FindStoredCertificate(lookup->storeContext, subject, found)) {
@@ -1661,7 +1794,7 @@ int APS5_VABI X509_STORE_load_locations_nid_postfix(LibreSslX509Store* store, co
     if (!store) throw std::invalid_argument(std::string(__func__) + ": null store");
     if (file) {
         if (!X509_STORE_add_lookup_nid_postfix(store, X509_LOOKUP_file_nid_postfix())) return 0;
-        if (LoadCertificates(store, file) == 0) return 0;
+        if (LoadCertificates(store, file, false) == 0) return 0;
     }
     if (directory) {
         LibreSslX509Lookup* lookup = X509_STORE_add_lookup_nid_postfix(store, &directoryLookupMethod);
