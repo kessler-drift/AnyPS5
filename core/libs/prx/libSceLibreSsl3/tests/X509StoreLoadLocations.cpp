@@ -957,6 +957,150 @@ void TestVersionReleasedWithoutSerial() {
     }
 }
 
+struct AuxView {
+    LibreSslStack* trust;
+    LibreSslStack* reject;
+    Asn1String* alias;
+    Asn1String* keyid;
+    LibreSslStack* other;
+};
+
+std::string Labelled(const Bytes& der, const std::string& label) {
+    std::string text = PemText(der);
+    text.replace(text.rfind("CERTIFICATE"), 11, label);
+    text.replace(text.find("CERTIFICATE"), 11, label);
+    return text;
+}
+
+const AuxView* LoadedAux(const LibreSslX509Store* store) {
+    const auto* certificate = static_cast<const unsigned char*>(StoredObject(store, 0)->data);
+    static_assert(sizeof(LibreSsl3Certificate) == 216);
+    Require(std::all_of(certificate + 32, certificate + 208, [](unsigned char byte) { return byte == 0; }));
+    const AuxView* aux = nullptr;
+    std::memcpy(&aux, certificate + 208, sizeof(aux));
+    return aux;
+}
+
+bool IsObject(const void* object, const Bytes& encoding) {
+    const auto* value = static_cast<const Asn1Object_nid_no_patch*>(object);
+    return value != nullptr && value->length == static_cast<int>(encoding.size()) &&
+        std::memcmp(value->data, encoding.data(), encoding.size()) == 0;
+}
+
+bool IsString(const Asn1String* value, int type, const Bytes& content) {
+    return value != nullptr && value->type == type && value->length == static_cast<int>(content.size()) &&
+        std::memcmp(value->data, content.data(), content.size()) == 0;
+}
+
+const AuxView* AuxLoadedFrom(const Bytes& der, const std::string& label) {
+    const std::string path = WriteFile("libressl3-load-locations-aux.pem", Labelled(der, label));
+    LibreSslX509Store* store = NewStore();
+    ERR_clear_error_nid_postfix();
+    Require(X509_STORE_load_locations_nid_postfix(store, path.c_str(), nullptr) == 1 && ObjectCount(store) == 1);
+    Require(ERR_get_error_nid_postfix() == 0);
+    Require(remove_nid_postfix(path.c_str()) == 0);
+    return LoadedAux(store);
+}
+
+void RequireFullAux(const AuxView* aux) {
+    Require(aux != nullptr && aux->trust != nullptr && aux->reject != nullptr && aux->other != nullptr);
+    Require(aux->trust->num == 2 && IsObject(aux->trust->data[0], {0x55, 0x1d, 0x25}));
+    Require(IsObject(aux->trust->data[1], {0x2a, 0x03, 0x04}));
+    Require(aux->reject->num == 1 && IsObject(aux->reject->data[0], {0x2a}));
+    Require(IsString(aux->alias, 12, {'a', 'b'}) && IsString(aux->keyid, 4, {0xab, 0xcd}));
+    Require(aux->other->num == 3);
+    const auto* algor = reinterpret_cast<const LibreSsl3X509Algor*>(aux->other->data[0]);
+    Require(IsObject(algor->algorithm, {0x55, 0x04, 0x03}) && algor->parameter != nullptr && algor->parameter->type == 5);
+    algor = reinterpret_cast<const LibreSsl3X509Algor*>(aux->other->data[1]);
+    Require(IsObject(algor->algorithm, {0x2a, 0x03}) && algor->parameter == nullptr);
+    algor = reinterpret_cast<const LibreSsl3X509Algor*>(aux->other->data[2]);
+    Require(IsObject(algor->algorithm, {0x55, 0x1d, 0x0f}) && algor->parameter != nullptr && algor->parameter->type == 5);
+}
+
+void TestAuxiliaryBytes() {
+    const Bytes der = DerFromPem(CertificateA);
+    const Bytes trust = Element(0x30, Concat({Element(0x06, {0x55, 0x1d, 0x25}), Element(0x26, Element(0x04, {0x2a, 0x03, 0x04}))}));
+    const Bytes reject = Element(0xa0, Element(0x06, {0x2a}));
+    const Bytes alias = {0x2c, 0x80, 0x04, 0x01, 'a', 0x0c, 0x01, 'b', 0x00, 0x00};
+    const Bytes keyid = Element(0x04, {0xab, 0xcd});
+    const Bytes other = Element(0xa1, Concat({Element(0x30, Concat({Element(0x06, {0x55, 0x04, 0x03}), {0x05, 0x00}})),
+        Element(0x30, Element(0x26, Concat({Element(0x26, Element(0x04, {0x2a})), Element(0x06, {0x03})}))),
+        Element(0x30, {0x26, 0x80, 0x04, 0x03, 0x55, 0x1d, 0x0f, 0x00, 0x00, 0x05, 0x00})}));
+    const Bytes full = Element(0x30, Concat({trust, reject, alias, keyid, other}));
+    const Bytes broken = Element(0x30, Concat({trust, reject, alias, keyid, {0xa1, 0x02, 0x30, 0x00}}));
+    for (const char* label : {"CERTIFICATE", "X509 CERTIFICATE"}) {
+        for (const Bytes& suffix : {Bytes{0x00, 0x00}, full, broken}) Require(AuxLoadedFrom(Concat({der, suffix}), label) == nullptr);
+    }
+    Require(AuxLoadedFrom(der, "TRUSTED CERTIFICATE") == nullptr);
+    RequireFullAux(AuxLoadedFrom(Concat({der, full}), "TRUSTED CERTIFICATE"));
+    for (const Bytes& suffix : {Bytes{0x30, 0x00}, Bytes{0x30, 0x80, 0x00, 0x00}, Bytes{0x30, 0x00, 0xff, 0xff}}) {
+        const AuxView* aux = AuxLoadedFrom(Concat({der, suffix}), "TRUSTED CERTIFICATE");
+        Require(aux != nullptr && !aux->trust && !aux->reject && !aux->alias && !aux->keyid && !aux->other);
+    }
+    const AuxView* primitive = AuxLoadedFrom(Concat({der, {0x30, 0x06, 0x10, 0x00, 0x80, 0x00, 0x81, 0x00}}), "TRUSTED CERTIFICATE");
+    Require(primitive != nullptr && primitive->trust != nullptr && primitive->trust->num == 0);
+    Require(primitive->reject != nullptr && primitive->reject->num == 0 && !primitive->alias && !primitive->keyid);
+    Require(primitive->other != nullptr && primitive->other->num == 0);
+    const AuxView* latin = AuxLoadedFrom(Concat({der, {0x30, 0x05, 0x0c, 0x03, 0xe4, 0xf6, 0xfc}}), "TRUSTED CERTIFICATE");
+    Require(latin != nullptr && IsString(latin->alias, 12, {0xe4, 0xf6, 0xfc}));
+    const AuxView* nested = AuxLoadedFrom(
+        Concat({der, {0x30, 0x0f, 0x2c, 0x0d, 0x24, 0x0b, 0x24, 0x09, 0x24, 0x07, 0x24, 0x05, 0x24, 0x03, 0x04, 0x01, 0x61}}), "TRUSTED CERTIFICATE");
+    Require(nested != nullptr && IsString(nested->alias, 12, {0x61}));
+
+    const std::pair<Bytes, std::uint64_t> rejected[] = {{{0x00, 0x00}, 0x0dfff0a8}, {{0x05}, 0x0dfff07b},
+        {{0x05, 0x00}, 0x0dfff0a8}, {{0xa0, 0x00}, 0x0dfff0a8}, {broken, 0x0dfff079},
+        {{0x30, 0x04, 0x04, 0x00, 0x0c, 0x00}, 0x0dfff0a8}, {{0x30, 0x80, 0x0c, 0x00, 0x05, 0x00, 0x00, 0x00}, 0x0dfff0a8},
+        {{0x30, 0x80, 0xa1, 0x00, 0x0c, 0x00, 0x00, 0x00}, 0x0dfff089}, {{0x30, 0x04, 0x30, 0x02, 0x26, 0x00}, 0x0dfff0d8},
+        {{0x30, 0x03, 0x30, 0x01, 0x06}, 0x0dfff07b}, {{0x30, 0x06, 0xa1, 0x04, 0x30, 0x02, 0x26, 0x00}, 0x0dfff0d8},
+        {{0x30, 0x08, 0xa1, 0x06, 0x30, 0x04, 0x26, 0x02, 0x00, 0x00}, 0x0dfff09f},
+        {{0x30, 0x09, 0xa1, 0x07, 0x30, 0x05, 0xa6, 0x03, 0x55, 0x04, 0x03}, 0x0dfff0a8},
+        {{0x30, 0x04, 0xa1, 0x00, 0xa1, 0x00}, 0x0dfff094}, {{0x10, 0x00}, 0x0dfff095}, {{0x30, 0x02, 0x70, 0x00}, 0x0dfff0a8},
+        {{0x30, 0x11, 0x2c, 0x0f, 0x24, 0x0d, 0x24, 0x0b, 0x24, 0x09, 0x24, 0x07, 0x24, 0x05, 0x24, 0x03, 0x04, 0x01, 0x61}, 0x0dfff0c5}};
+    for (const auto& [suffix, error] : rejected) {
+        const std::string text = Labelled(Concat({der, suffix}), "TRUSTED CERTIFICATE");
+        const std::string path = WriteFile("libressl3-load-locations-aux.pem", text);
+        LibreSslX509Store* store = NewStore();
+        ERR_clear_error_nid_postfix();
+        Require(X509_STORE_load_locations_nid_postfix(store, path.c_str(), nullptr) == 0 && ObjectCount(store) == 0);
+        Require(ERR_get_error_nid_postfix() == error && ERR_get_error_nid_postfix() == 0);
+        X509_STORE_free_nid_postfix(store);
+        Require(remove_nid_postfix(path.c_str()) == 0);
+        Require(LiveBlocksAfterLoad(text, 0, 0, true) == 0);
+    }
+    const std::string trusted = Labelled(Concat({der, full}), "TRUSTED CERTIFICATE");
+    const long single = LiveBlocksAfterLoad(trusted, 1, 1, false);
+    Require(single > 0 && LiveBlocksAfterLoad(trusted + trusted, 1, 1, false) == single);
+
+    const std::string referencePath = WriteFile("libressl3-load-locations-aux.pem", CertificateA);
+    LibreSslX509Store* reference = NewStore();
+    Require(X509_STORE_load_locations_nid_postfix(reference, referencePath.c_str(), nullptr) == 1);
+    Require(remove_nid_postfix(referencePath.c_str()) == 0);
+    auto* name = const_cast<LibreSslX509Name*>(LoadedName(reference, true));
+    const std::filesystem::path directory = std::filesystem::temp_directory_path() / "anyps5-libressl3-aux-ca";
+    std::error_code ignored;
+    std::filesystem::remove_all(directory, ignored);
+    Require(std::filesystem::create_directories(directory));
+    AddPathAlias_nid_no_patch("/ca-aux", directory.string().c_str());
+    const std::string hashedPath = std::string("/ca-aux/") + HashedNameA;
+    LibreSslX509Store* store = NewStore();
+    Require(X509_STORE_load_locations_nid_postfix(store, nullptr, "/ca-aux") == 1);
+    auto* lookup = reinterpret_cast<LibreSslX509Lookup*>(static_cast<const LibreSslStack*>(store->lookupMethods)->data[0]);
+    const auto bySubject = reinterpret_cast<int (APS5_VABI*)(LibreSslX509Lookup*, int, LibreSslX509Name*, LibreSslX509Object*)>(
+        lookup->method->getBySubject);
+    LibreSslX509Object result{};
+    for (const char* label : {"CERTIFICATE", "X509 CERTIFICATE", "TRUSTED CERTIFICATE"}) {
+        WriteFile(hashedPath, Labelled(Concat({der, {0x00, 0x00}}), label));
+        ERR_clear_error_nid_postfix();
+        Require(bySubject(lookup, LibreSslX509LookupX509, name, &result) == 0 && ObjectCount(store) == 0);
+        Require(ERR_get_error_nid_postfix() == 0x0dfff0a8 && ERR_get_error_nid_postfix() == 0);
+    }
+    WriteFile(hashedPath, PemText(Concat({der, full})));
+    Require(bySubject(lookup, LibreSslX509LookupX509, name, &result) == 1 && ObjectCount(store) == 1);
+    Require(ERR_get_error_nid_postfix() == 0);
+    RequireFullAux(LoadedAux(store));
+    std::filesystem::remove_all(directory, ignored);
+}
+
 void TestLatin1LookupName() {
     const std::filesystem::path directory = std::filesystem::temp_directory_path() / "anyps5-libressl3-latin1-ca";
     std::error_code ignored;
@@ -1221,6 +1365,7 @@ int main() {
     TestEmptyRelativeNames();
     TestNameEncodingsReleased();
     TestVersionReleasedWithoutSerial();
+    TestAuxiliaryBytes();
     TestConvertedNameStrings();
     TestRejectedNameStrings();
     TestLatin1LookupName();
