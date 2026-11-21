@@ -1229,7 +1229,7 @@ LibreSsl3CertificateInfo* DecodeCertificateInfo(const Tlv& tbs) {
     }
     Tlv serial;
     if (!Next(body, IntegerTag, serial)) {
-        free_nid_postfix(info);
+        FreeCertificateInfo(info);
         return nullptr;
     }
     info->serialNumber = NewInteger(serial.content);
