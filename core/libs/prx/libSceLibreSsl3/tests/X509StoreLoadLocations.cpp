@@ -939,6 +939,24 @@ void TestNameEncodingsReleased() {
     Require(LiveBlocksAfterLoad(std::string(CertificateA) + CertificateA, 1, 1, false) == single);
 }
 
+void TestVersionReleasedWithoutSerial() {
+    Bytes otherTag = DerFromPem(CertificateA);
+    Require(otherTag[13] == 0x02);
+    otherTag[13] = 0x04;
+    const Bytes algorithm = Element(0x30, Element(0x06, {0x2b, 0x65, 0x70}));
+    const Bytes signature = Element(0x03, Concat({{0x00}, Bytes(64, 0x22)}));
+    const Bytes version = Element(0xa0, Element(0x02, {0x02}));
+    const Bytes absent = Element(0x30, Concat({Element(0x30, version), algorithm, signature}));
+    const Bytes algorithmNext = Element(0x30, Concat({Element(0x30, Concat({version, algorithm})), algorithm, signature}));
+    const Bytes truncated = Element(0x30, Concat({Element(0x30, Concat({version, {0x02, 0x05, 0x01}})), algorithm, signature}));
+    const std::pair<const Bytes&, std::uint64_t> cases[] = {
+        {otherTag, 0x0dfff0a8}, {absent, 0x0dfff079}, {algorithmNext, 0x0dfff0a8}, {truncated, 0x0dfff09b}};
+    for (const auto& [der, error] : cases) {
+        RequireBerRejected(der, error);
+        Require(LiveBlocksAfterLoad(PemText(der), 0, 0, true) == 0);
+    }
+}
+
 void TestLatin1LookupName() {
     const std::filesystem::path directory = std::filesystem::temp_directory_path() / "anyps5-libressl3-latin1-ca";
     std::error_code ignored;
@@ -1202,6 +1220,7 @@ int main() {
     TestLongNameEncoding();
     TestEmptyRelativeNames();
     TestNameEncodingsReleased();
+    TestVersionReleasedWithoutSerial();
     TestConvertedNameStrings();
     TestRejectedNameStrings();
     TestLatin1LookupName();
