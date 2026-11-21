@@ -16,6 +16,7 @@
 #include <exception>
 #include <initializer_list>
 #include <limits>
+#include <new>
 #include <source_location>
 #include <stdexcept>
 #include <unordered_map>
@@ -27,6 +28,38 @@
 #else
 #include <sys/mman.h>
 #include <unistd.h>
+#endif
+
+#ifndef _WIN32
+namespace {
+bool hostTracking = false;
+std::array<void*, 16> hostTracked {};
+
+void ReleaseHost(void* pointer) {
+    const auto slot = std::find(hostTracked.begin(), hostTracked.end(), pointer);
+    if (pointer && slot != hostTracked.end()) *slot = nullptr;
+    std::free(pointer);
+}
+}
+
+void* operator new(std::size_t size) {
+    void* pointer = std::malloc(size ? size : 1);
+    if (!pointer) throw std::bad_alloc();
+    if (hostTracking) {
+        const auto slot = std::find(hostTracked.begin(), hostTracked.end(), nullptr);
+        if (slot == hostTracked.end()) std::abort();
+        *slot = pointer;
+    }
+    return pointer;
+}
+
+void operator delete(void* pointer) noexcept {
+    ReleaseHost(pointer);
+}
+
+void operator delete(void* pointer, std::size_t) noexcept {
+    ReleaseHost(pointer);
+}
 #endif
 
 namespace {
@@ -1597,6 +1630,180 @@ private:
     std::size_t size = 0;
 };
 
+void EcControls() {
+    constexpr int P256 = 415;
+    constexpr char Private[] = "C88F01F510D9AC3F70A292DAA2316DE544E9AAB8AFE84049C62A9C57862D1433";
+    auto* key = NewEcPkey(NewEcKey(Private, P256));
+    auto* context = EVP_PKEY_CTX_new_nid_postfix(key, nullptr);
+    Require(context != nullptr && context->data != nullptr);
+    Require(EVP_PKEY_derive_init_nid_postfix(context) == 1);
+    const auto control = [&](int command, int first, void* second) {
+        return EVP_PKEY_CTX_ctrl_nid_postfix(context, LibreSsl3PkeyEc, LibreSsl3PkeyOperationDerive, command, first,
+            second);
+    };
+    for (const int command : {LibreSsl3PkeyControlPeerKey, LibreSsl3PkeyControlDigestInit,
+             LibreSsl3PkeyControlPkcs7Sign, LibreSsl3PkeyControlCmsSign}) {
+        Require(control(command, 0, nullptr) == 1);
+        ExpectErrors({});
+    }
+    for (const int command : {0, LibreSsl3PkeyControlPkcs7Encrypt, LibreSsl3PkeyControlPkcs7Decrypt,
+             LibreSsl3PkeyControlSetMacKey, 8, LibreSsl3PkeyControlCmsEncrypt, LibreSsl3PkeyControlCmsDecrypt,
+             LibreSsl3PkeyControlCipher, 14, LibreSsl3PkeyControlAlgorithm, LibreSsl3PkeyControlAlgorithm + 11,
+             LibreSsl3PkeyControlAlgorithm + 13}) {
+        Require(control(command, 0, nullptr) == -2);
+        ExpectErrors({EvpCode(147)});
+    }
+
+    const auto* digest = static_cast<const LibreSsl3::DigestMethod*>(Pointer(PlainMessage));
+    Require(control(LibreSsl3PkeyControlGetMessageDigest, 0, &digest) == 1);
+    Require(digest == nullptr);
+    Require(control(LibreSsl3PkeyControlMessageDigest, 0, Pointer(EVP_md5_nid_postfix())) == 0);
+    ExpectErrors({EcCode(138)});
+    for (const void* accepted : {Pointer(EVP_sha1_nid_postfix()), Pointer(EVP_ecdsa_nid_postfix()),
+             Pointer(EVP_sha224_nid_postfix()), Pointer(EVP_sha256_nid_postfix()), Pointer(EVP_sha512_nid_postfix()),
+             Pointer(EVP_sha384_nid_postfix())}) {
+        Require(control(LibreSsl3PkeyControlMessageDigest, 0, Pointer(accepted)) == 1);
+        Require(control(LibreSsl3PkeyControlGetMessageDigest, 0, &digest) == 1);
+        Require(Pointer(digest) == accepted);
+    }
+    ExpectErrors({});
+
+    Require(control(LibreSsl3PkeyControlEcParameterEncoding, 1, nullptr) == 0);
+    ExpectErrors({EcCode(139)});
+    Require(control(LibreSsl3PkeyControlEcParameterGenerationCurve, 999, nullptr) == 0);
+    ExpectErrors({EcCode(129), EcCode(141)});
+    for (const int nid : {0, -1}) {
+        Require(control(LibreSsl3PkeyControlEcParameterGenerationCurve, nid, nullptr) == 0);
+        ExpectErrors({EcCode(141)});
+    }
+    Require(control(LibreSsl3PkeyControlEcParameterEncoding, 1, nullptr) == 0);
+    ExpectErrors({EcCode(139)});
+    Require(Throws([&] { control(LibreSsl3PkeyControlEcParameterGenerationCurve, 993, nullptr); }));
+    Require(control(LibreSsl3PkeyControlEcParameterGenerationCurve, 715, nullptr) == 1);
+    Require(control(LibreSsl3PkeyControlEcParameterGenerationCurve, P256, nullptr) == 1);
+    for (const int nid : {409, 415, 711, 712, 713, 714, 715, 716, 928, 932, 934}) {
+        Require(control(LibreSsl3PkeyControlEcParameterGenerationCurve, nid, nullptr) == 1);
+        ExpectErrors({});
+    }
+    Require(control(LibreSsl3PkeyControlEcParameterGenerationCurve, 999, nullptr) == 0);
+    ExpectErrors({EcCode(129), EcCode(141)});
+    for (const int nid : {408, 416}) {
+        Require(control(LibreSsl3PkeyControlEcParameterGenerationCurve, nid, nullptr) == 0);
+        ExpectErrors({EcCode(129), EcCode(141)});
+    }
+    Require(control(LibreSsl3PkeyControlEcParameterEncoding, 1, nullptr) == 1);
+    ExpectErrors({});
+
+    Require(control(LibreSsl3PkeyControlEcdhCofactor, -2, nullptr) == 0);
+    Require(control(LibreSsl3PkeyControlEcdhCofactor, -1, nullptr) == 1);
+    Require(control(LibreSsl3PkeyControlEcdhCofactor, -3, nullptr) == -2);
+    ExpectErrors({EvpCode(147)});
+    Require(control(LibreSsl3PkeyControlEcdhCofactor, 2, nullptr) == -2);
+    ExpectErrors({EvpCode(147)});
+    Require(control(LibreSsl3PkeyControlEcdhCofactor, -2, nullptr) == 0);
+    Require(control(LibreSsl3PkeyControlEcdhCofactor, 1, nullptr) == 1);
+    Require(control(LibreSsl3PkeyControlEcdhCofactor, -2, nullptr) == 1);
+    Require(control(LibreSsl3PkeyControlEcdhCofactor, 0, nullptr) == 1);
+    Require(control(LibreSsl3PkeyControlEcdhCofactor, -2, nullptr) == 0);
+    auto* ecKey = static_cast<EcKey*>(key->key);
+    ecKey->flags |= 0x1000;
+    auto* flagged = EVP_PKEY_CTX_new_nid_postfix(key, nullptr);
+    Require(flagged != nullptr && EVP_PKEY_derive_init_nid_postfix(flagged) == 1);
+    Require(EVP_PKEY_CTX_ctrl_nid_postfix(flagged, LibreSsl3PkeyEc, LibreSsl3PkeyOperationDerive,
+                LibreSsl3PkeyControlEcdhCofactor, -2, nullptr)
+        == 1);
+    EVP_PKEY_CTX_free_nid_postfix(flagged);
+    Require(control(LibreSsl3PkeyControlEcdhCofactor, -2, nullptr) == 0);
+    Require(control(LibreSsl3PkeyControlEcdhCofactor, -1, nullptr) == 1);
+    Require(control(LibreSsl3PkeyControlEcdhCofactor, -2, nullptr) == 1);
+    ecKey->flags &= ~0x1000;
+    Require(control(LibreSsl3PkeyControlEcdhCofactor, -2, nullptr) == 0);
+    ExpectErrors({});
+
+    Require(control(LibreSsl3PkeyControlEcdhKdfType, -2, nullptr) == LibreSsl3EcdhKdfNone);
+    Require(control(LibreSsl3PkeyControlEcdhKdfType, LibreSsl3EcdhKdfNone, nullptr) == 1);
+    Require(control(LibreSsl3PkeyControlEcdhKdfType, 0, nullptr) == -2);
+    ExpectErrors({EvpCode(147)});
+    Require(control(LibreSsl3PkeyControlEcdhKdfType, 3, nullptr) == -2);
+    ExpectErrors({EvpCode(147)});
+    Require(Throws([&] { control(LibreSsl3PkeyControlEcdhKdfType, LibreSsl3EcdhKdfX963, nullptr); }));
+
+    Require(control(LibreSsl3PkeyControlGetEcdhKdfDigest, 0, &digest) == 1);
+    Require(digest == nullptr);
+    Require(control(LibreSsl3PkeyControlEcdhKdfDigest, 0, Pointer(EVP_sha256_nid_postfix())) == 1);
+    Require(control(LibreSsl3PkeyControlGetEcdhKdfDigest, 0, &digest) == 1);
+    Require(Pointer(digest) == Pointer(EVP_sha256_nid_postfix()));
+    Require(control(LibreSsl3PkeyControlEcdhKdfDigest, 0, nullptr) == 1);
+    Require(control(LibreSsl3PkeyControlGetEcdhKdfDigest, 0, &digest) == 1);
+    Require(digest == nullptr);
+
+    int outputLength = -1;
+    Require(control(LibreSsl3PkeyControlGetEcdhKdfOutputLength, 0, &outputLength) == 1);
+    Require(outputLength == 0);
+    Require(control(LibreSsl3PkeyControlEcdhKdfOutputLength, 0, nullptr) == -2);
+    ExpectErrors({EvpCode(147)});
+    Require(control(LibreSsl3PkeyControlEcdhKdfOutputLength, 48, nullptr) == 1);
+    Require(control(LibreSsl3PkeyControlGetEcdhKdfOutputLength, 0, &outputLength) == 1);
+    Require(outputLength == 48);
+
+    unsigned char* material = nullptr;
+    Require(control(LibreSsl3PkeyControlGetEcdhKdfUkm, 0, &material) == 0);
+    Require(material == nullptr);
+    auto* first = static_cast<unsigned char*>(calloc_nid_postfix(1, 8));
+    Require(control(LibreSsl3PkeyControlEcdhKdfUkm, 5, first) == 1);
+    Require(control(LibreSsl3PkeyControlGetEcdhKdfUkm, 0, &material) == 5);
+    Require(material == first);
+    Require(control(LibreSsl3PkeyControlEcdhKdfUkm, 7, nullptr) == 1);
+    Require(control(LibreSsl3PkeyControlGetEcdhKdfUkm, 0, &material) == 0);
+    Require(material == nullptr);
+    auto* second = static_cast<unsigned char*>(calloc_nid_postfix(1, 8));
+    Require(control(LibreSsl3PkeyControlEcdhKdfUkm, -3, second) == 1);
+    Require(control(LibreSsl3PkeyControlGetEcdhKdfUkm, 0, &material) == -3);
+    ExpectErrors({});
+
+    std::size_t length = 0;
+    Require(EVP_PKEY_derive_set_peer_nid_postfix(context, key) == 1);
+    Require(EVP_PKEY_derive_nid_postfix(context, nullptr, &length) == 1 && length == 32);
+    EVP_PKEY_CTX_free_nid_postfix(context);
+    EVP_PKEY_free_nid_disambig1_nid_postfix(key);
+
+    key = NewEcPkey(EC_KEY_new_nid_postfix());
+    context = EVP_PKEY_CTX_new_nid_postfix(key, nullptr);
+    Require(context != nullptr && EVP_PKEY_derive_init_nid_postfix(context) == 1);
+    Require(control(LibreSsl3PkeyControlEcdhCofactor, 1, nullptr) == -2);
+    ExpectErrors({EvpCode(147)});
+    Require(control(LibreSsl3PkeyControlEcdhCofactor, -2, nullptr) == 1);
+    Require(control(LibreSsl3PkeyControlEcdhCofactor, 0, nullptr) == -2);
+    ExpectErrors({EvpCode(147)});
+    Require(control(LibreSsl3PkeyControlEcdhCofactor, -2, nullptr) == 0);
+    Require(control(LibreSsl3PkeyControlEcdhCofactor, -1, nullptr) == 1);
+    Require(control(LibreSsl3PkeyControlEcdhCofactor, -2, nullptr) == 0);
+    ExpectErrors({});
+    EVP_PKEY_CTX_free_nid_postfix(context);
+    EVP_PKEY_free_nid_disambig1_nid_postfix(key);
+
+    context = EVP_PKEY_CTX_new_id_nid_postfix(LibreSsl3PkeyEc, nullptr);
+    Require(context != nullptr && EVP_PKEY_derive_init_nid_postfix(context) == 1);
+    Require(control(LibreSsl3PkeyControlEcdhCofactor, -1, nullptr) == 1);
+    Require(Throws([&] { control(LibreSsl3PkeyControlEcdhCofactor, 1, nullptr); }));
+    EVP_PKEY_CTX_free_nid_postfix(context);
+}
+
+#ifndef _WIN32
+void EcGenerationGroupRelease() {
+    auto* context = EVP_PKEY_CTX_new_id_nid_postfix(LibreSsl3PkeyEc, nullptr);
+    Require(context != nullptr && EVP_PKEY_derive_init_nid_postfix(context) == 1);
+    hostTracking = true;
+    for (const int nid : {415, 715}) {
+        Require(EVP_PKEY_CTX_ctrl_nid_postfix(context, LibreSsl3PkeyEc, LibreSsl3PkeyOperationDerive,
+                    LibreSsl3PkeyControlEcParameterGenerationCurve, nid, nullptr) == 1);
+    }
+    EVP_PKEY_CTX_free_nid_postfix(context);
+    hostTracking = false;
+    Require(std::all_of(hostTracked.begin(), hostTracked.end(), [](const void* pointer) { return pointer == nullptr; }));
+}
+#endif
+
 void GuestOutputLengths() {
     auto* key = NewNativeKey(LibreSsl3PkeyRsa);
     auto* context = EVP_PKEY_CTX_new_nid_postfix(key, nullptr);
@@ -1663,6 +1870,10 @@ int main() {
     SignFinalVerifyFinal();
     DigestSignInitWithoutDigest();
     EcdhDerivation();
+    EcControls();
+#ifndef _WIN32
+    EcGenerationGroupRelease();
+#endif
     GuestOutputLengths();
     Require(allocations.empty());
     std::puts("LibreSSL3 EVP_PKEY_CTX RSA encryption and signature tests passed");

@@ -530,9 +530,11 @@
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
+#include <new>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 #include "prx/libSceLibreSsl/include/Error.hpp"
 #include "prx/libSceLibreSsl3/include/Api.hpp"
@@ -567,6 +569,10 @@ constexpr int ReasonDifferentParameters = 153;
 constexpr int ReasonMissingParameters = 103;
 constexpr int ReasonNoKeySet = 154;
 constexpr int ReasonKeysNotSet = 140;
+constexpr int ReasonInvalidDigestType = 138;
+constexpr int ReasonNoParametersSet = 139;
+constexpr int ReasonInvalidCurve = 141;
+constexpr int ReasonUnknownGroup = 129;
 
 constexpr int ReasonKeySizeTooSmall = 120;
 constexpr int ReasonBadExponentValue = 101;
@@ -586,6 +592,7 @@ constexpr int Asn1MethodFlags = 4;
 constexpr int DefaultDigestNid = 672;
 constexpr int DefaultKeyGenerationBits = 2048;
 constexpr int NoSaltLengthLimit = -1;
+constexpr std::int32_t EcFlagCofactorEcdh = 0x1000;
 
 constexpr std::uint64_t DigestCleanedFlag = 2;
 constexpr std::uint64_t DigestReuseFlag = 4;
@@ -597,6 +604,7 @@ constexpr int Md5Type = 4;
 constexpr int Md5Sha1Type = 114;
 constexpr int Ripemd160Type = 117;
 constexpr int Sha1Type = 64;
+constexpr int EcdsaWithSha1Type = 416;
 constexpr int Sha224Type = 675;
 constexpr int Sha256Type = 672;
 constexpr int Sha384Type = 673;
@@ -1144,15 +1152,186 @@ const LibreSsl3PkeyMethod RsaPssMethod {
     nullptr,
 };
 
-int APS5_VABI EcContextInitialize(LibreSsl3PkeyContext*) {
+constexpr std::pair<int, int> LibreSslCurveNids[] = {{409, 415}, {684, 690}, {693, 696}, {699, 745}, {749, 750},
+    {839, 844}, {922, 936}, {943, 944}, {993, 998}};
+
+struct EcContextData {
+    EcGroup* generationGroup;
+    int cofactorMode;
+    const DigestMethod* digest;
+    const DigestMethod* kdfDigest;
+    std::size_t kdfOutputLength;
+    unsigned char* kdfUkm;
+    std::size_t kdfUkmLength;
+};
+
+EcContextData* EcContextDataOf(const LibreSsl3PkeyContext* context) {
+    auto* data = static_cast<EcContextData*>(context->data);
+    if (!data) NotImplemented_nid_no_patch("EVP_PKEY_CTX operation without EC context data");
+    return data;
+}
+
+const EcKey* EcKeyOf(const LibreSsl3PkeyContext* context) {
+    const auto* key = static_cast<const LibreSsl3EvpPkey*>(context->key);
+    const auto* ecKey = key ? static_cast<const EcKey*>(key->key) : nullptr;
+    if (!ecKey) Reject("EVP_PKEY_CTX_ctrl ECDH cofactor without an EC key");
+    return ecKey;
+}
+
+EcGroup* NewCurveGroup(int nid) {
+    if (nid <= 0) return nullptr;
+    for (const auto& [first, last] : LibreSslCurveNids) {
+        if (nid < first || nid > last) continue;
+        auto* group = EC_GROUP_new_by_curve_name_nid_postfix(nid);
+        if (!group)
+            NotImplemented_nid_no_patch("EVP_PKEY_CTRL_EC_PARAMGEN_CURVE_NID: a LibreSSL curve that libSceLibreSsl lacks");
+        return group;
+    }
+    LibreSslPutError_nid_no_patch(EcLibrary, AnyFunction, ReasonUnknownGroup);
+    return nullptr;
+}
+
+bool CofactorIsOne(const EcGroup& group) {
+    const mbedtls_ecp_group& curve = group.group;
+    mbedtls_mpi rounded;
+    mbedtls_mpi cofactor;
+    mbedtls_mpi_init(&rounded);
+    mbedtls_mpi_init(&cofactor);
+    const bool computed = mbedtls_mpi_copy(&rounded, &curve.N) == 0 && mbedtls_mpi_shift_r(&rounded, 1) == 0
+        && mbedtls_mpi_add_mpi(&rounded, &rounded, &curve.P) == 0 && mbedtls_mpi_add_int(&rounded, &rounded, 1) == 0
+        && mbedtls_mpi_div_mpi(&cofactor, nullptr, &rounded, &curve.N) == 0;
+    const bool one = computed && mbedtls_mpi_cmp_int(&cofactor, 1) == 0;
+    mbedtls_mpi_free(&rounded);
+    mbedtls_mpi_free(&cofactor);
+    if (!computed) throw std::bad_alloc();
+    return one;
+}
+
+int APS5_VABI EcContextInitialize(LibreSsl3PkeyContext* context) {
+    auto* data = static_cast<EcContextData*>(calloc_nid_postfix(1, sizeof(EcContextData)));
+    if (!data) {
+        LibreSslPutError_nid_no_patch(EcLibrary, AnyFunction, AllocationFailure);
+        return 0;
+    }
+    data->cofactorMode = -1;
+    context->data = data;
     return 1;
 }
 
-void APS5_VABI EcContextClear(LibreSsl3PkeyContext*) {}
+void APS5_VABI EcContextClear(LibreSsl3PkeyContext* context) {
+    auto* data = static_cast<EcContextData*>(context->data);
+    if (!data) return;
+    EC_GROUP_free_nid_postfix(data->generationGroup);
+    if (data->kdfUkm) free_nid_postfix(data->kdfUkm);
+    free_nid_postfix(data);
+    context->data = nullptr;
+}
 
-int APS5_VABI EcControl(LibreSsl3PkeyContext*, int command, int, void*) {
-    if (command == LibreSsl3PkeyControlPeerKey) return 1;
-    return -2;
+int APS5_VABI EcControl(LibreSsl3PkeyContext* context, int command, int first, void* second) {
+    auto* data = EcContextDataOf(context);
+    switch (command) {
+    case LibreSsl3PkeyControlEcParameterGenerationCurve: {
+        auto* group = NewCurveGroup(first);
+        if (!group) {
+            LibreSslPutError_nid_no_patch(EcLibrary, AnyFunction, ReasonInvalidCurve);
+            return 0;
+        }
+        EC_GROUP_free_nid_postfix(data->generationGroup);
+        data->generationGroup = group;
+        return 1;
+    }
+
+    case LibreSsl3PkeyControlEcParameterEncoding:
+        if (!data->generationGroup) {
+            LibreSslPutError_nid_no_patch(EcLibrary, AnyFunction, ReasonNoParametersSet);
+            return 0;
+        }
+        data->generationGroup->asn1Flag = first;
+        return 1;
+
+    case LibreSsl3PkeyControlEcdhCofactor: {
+        if (first == -2) {
+            if (data->cofactorMode != -1) return data->cofactorMode;
+            return (EcKeyOf(context)->flags & EcFlagCofactorEcdh) != 0 ? 1 : 0;
+        }
+        if (first < -1 || first > 1) return -2;
+        data->cofactorMode = first;
+        if (first == -1) return 1;
+        const auto* ecKey = EcKeyOf(context);
+        if (!ecKey->group) return -2;
+        if (!CofactorIsOne(*ecKey->group))
+            NotImplemented_nid_no_patch("EVP_PKEY_CTRL_EC_ECDH_COFACTOR: the cofactor key of a group whose cofactor is not 1");
+        return 1;
+    }
+
+    case LibreSsl3PkeyControlEcdhKdfType:
+        if (first == -2) return LibreSsl3EcdhKdfNone;
+        if (first == LibreSsl3EcdhKdfX963) NotImplemented_nid_no_patch("EVP_PKEY_CTX_ctrl X9.63 ECDH KDF");
+        if (first != LibreSsl3EcdhKdfNone) return -2;
+        return 1;
+
+    case LibreSsl3PkeyControlEcdhKdfDigest:
+        data->kdfDigest = static_cast<const DigestMethod*>(second);
+        return 1;
+
+    case LibreSsl3PkeyControlGetEcdhKdfDigest:
+        if (!second) Reject("EVP_PKEY_CTX_ctrl get ECDH KDF digest without an output");
+        *static_cast<const DigestMethod**>(second) = data->kdfDigest;
+        return 1;
+
+    case LibreSsl3PkeyControlEcdhKdfOutputLength:
+        if (first <= 0) return -2;
+        data->kdfOutputLength = static_cast<std::size_t>(first);
+        return 1;
+
+    case LibreSsl3PkeyControlGetEcdhKdfOutputLength:
+        if (!second) Reject("EVP_PKEY_CTX_ctrl get ECDH KDF output length without an output");
+        *static_cast<int*>(second) = static_cast<int>(data->kdfOutputLength);
+        return 1;
+
+    case LibreSsl3PkeyControlEcdhKdfUkm:
+        if (data->kdfUkm) free_nid_postfix(data->kdfUkm);
+        data->kdfUkm = static_cast<unsigned char*>(second);
+        data->kdfUkmLength = second ? static_cast<std::size_t>(first) : 0;
+        return 1;
+
+    case LibreSsl3PkeyControlGetEcdhKdfUkm:
+        if (!second) Reject("EVP_PKEY_CTX_ctrl get ECDH KDF UKM without an output");
+        *static_cast<unsigned char**>(second) = data->kdfUkm;
+        return static_cast<int>(data->kdfUkmLength);
+
+    case LibreSsl3PkeyControlMessageDigest: {
+        const auto* digest = static_cast<const DigestMethod*>(second);
+        if (!digest) Reject("EVP_PKEY_CTX_ctrl EC digest without a digest");
+        switch (digest->type) {
+        case Sha1Type:
+        case EcdsaWithSha1Type:
+        case Sha224Type:
+        case Sha256Type:
+        case Sha384Type:
+        case Sha512Type:
+            data->digest = digest;
+            return 1;
+        default:
+            LibreSslPutError_nid_no_patch(EcLibrary, AnyFunction, ReasonInvalidDigestType);
+            return 0;
+        }
+    }
+
+    case LibreSsl3PkeyControlGetMessageDigest:
+        if (!second) Reject("EVP_PKEY_CTX_ctrl get digest without an output");
+        *static_cast<const DigestMethod**>(second) = data->digest;
+        return 1;
+
+    case LibreSsl3PkeyControlPeerKey:
+    case LibreSsl3PkeyControlDigestInit:
+    case LibreSsl3PkeyControlPkcs7Sign:
+    case LibreSsl3PkeyControlCmsSign:
+        return 1;
+
+    default:
+        return -2;
+    }
 }
 
 int APS5_VABI EcDerive(LibreSsl3PkeyContext* context, unsigned char* output, std::size_t* outputLength) {
@@ -1215,7 +1394,7 @@ const LibreSsl3PkeyMethod EcMethod {
     nullptr,
     nullptr,
     nullptr,
-    &EcContextInitialize,
+    nullptr,
     &EcDerive,
     &EcControl,
     nullptr,

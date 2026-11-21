@@ -132,8 +132,8 @@ void EcContext() {
     Require(context->key == nullptr);
     Require(context->peerKey == nullptr);
     Require(context->operation == LibreSsl3PkeyOperationUndefined);
-    Require(context->data == nullptr);
-    Require(allocations.size() == 1);
+    Require(context->data != nullptr);
+    Require(allocations.size() == 2);
     Require(ERR_get_error_nid_postfix() == 0);
     Require(EVP_PKEY_derive_init_nid_postfix(context) == 1);
     Require(context->operation == LibreSsl3PkeyOperationDerive);

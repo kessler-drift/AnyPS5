@@ -79,4 +79,17 @@ inline constexpr std::int32_t LibreSsl3PkeyControlRsaOaepLabel = LibreSsl3PkeyCo
 inline constexpr std::int32_t LibreSsl3PkeyControlGetRsaOaepDigest = LibreSsl3PkeyControlAlgorithm + 11;
 inline constexpr std::int32_t LibreSsl3PkeyControlGetRsaOaepLabel = LibreSsl3PkeyControlAlgorithm + 12;
 
+inline constexpr std::int32_t LibreSsl3PkeyControlEcParameterGenerationCurve = LibreSsl3PkeyControlAlgorithm + 1;
+inline constexpr std::int32_t LibreSsl3PkeyControlEcParameterEncoding = LibreSsl3PkeyControlAlgorithm + 2;
+inline constexpr std::int32_t LibreSsl3PkeyControlEcdhCofactor = LibreSsl3PkeyControlAlgorithm + 3;
+inline constexpr std::int32_t LibreSsl3PkeyControlEcdhKdfType = LibreSsl3PkeyControlAlgorithm + 4;
+inline constexpr std::int32_t LibreSsl3PkeyControlEcdhKdfDigest = LibreSsl3PkeyControlAlgorithm + 5;
+inline constexpr std::int32_t LibreSsl3PkeyControlGetEcdhKdfDigest = LibreSsl3PkeyControlAlgorithm + 6;
+inline constexpr std::int32_t LibreSsl3PkeyControlEcdhKdfOutputLength = LibreSsl3PkeyControlAlgorithm + 7;
+inline constexpr std::int32_t LibreSsl3PkeyControlGetEcdhKdfOutputLength = LibreSsl3PkeyControlAlgorithm + 8;
+inline constexpr std::int32_t LibreSsl3PkeyControlEcdhKdfUkm = LibreSsl3PkeyControlAlgorithm + 9;
+inline constexpr std::int32_t LibreSsl3PkeyControlGetEcdhKdfUkm = LibreSsl3PkeyControlAlgorithm + 10;
+inline constexpr std::int32_t LibreSsl3EcdhKdfNone = 1;
+inline constexpr std::int32_t LibreSsl3EcdhKdfX963 = 2;
+
 inline constexpr std::int32_t LibreSsl3Asn1PkeyControlDefaultDigestNid = 0x3;
