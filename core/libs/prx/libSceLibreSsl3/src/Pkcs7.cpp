@@ -91,18 +91,25 @@ bool ReadTlv(std::span<const unsigned char>& input, Tlv& value) {
     std::size_t offset = 2;
     std::size_t length = input[1];
     if (length & 0x80) {
-        const std::size_t count = length & 0x7f;
-        if (count > sizeof(std::size_t) || input.size() < 2 + count || input[2] == 0) {
+        std::size_t count = length & 0x7f;
+        if (input.size() - offset < count) {
+            PutError(BadObjectHeader);
+            return false;
+        }
+        while (count != 0 && input[offset] == 0) {
+            ++offset;
+            --count;
+        }
+        if (count > sizeof(std::size_t)) {
             PutError(BadObjectHeader);
             return false;
         }
         length = 0;
-        for (std::size_t index = 0; index < count; ++index) length = (length << 8) | input[2 + index];
-        if (length < 128) {
+        for (; count != 0; --count) length = (length << 8) | input[offset++];
+        if (length > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) {
             PutError(BadObjectHeader);
             return false;
         }
-        offset += count;
     }
     if (length > input.size() - offset) {
         PutError(TooLong);

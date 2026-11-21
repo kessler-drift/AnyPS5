@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 #include <source_location>
 #include <stdexcept>
 #include <unordered_map>
@@ -185,6 +186,22 @@ std::vector<unsigned char> Wrap(unsigned char tag, std::vector<unsigned char> co
     return result;
 }
 
+std::vector<unsigned char> LongWrap(unsigned char tag, const std::vector<unsigned char>& content, std::size_t zeros) {
+    std::vector<unsigned char> length;
+    for (std::size_t size = content.size(); size != 0; size >>= 8) length.insert(length.begin(), static_cast<unsigned char>(size));
+    std::vector<unsigned char> result{tag, static_cast<unsigned char>(0x80 | (zeros + length.size()))};
+    result.insert(result.end(), zeros, 0);
+    result.insert(result.end(), length.begin(), length.end());
+    result.insert(result.end(), content.begin(), content.end());
+    return result;
+}
+
+std::vector<unsigned char> Join(std::initializer_list<std::vector<unsigned char>> parts) {
+    std::vector<unsigned char> result;
+    for (const std::vector<unsigned char>& part : parts) result.insert(result.end(), part.begin(), part.end());
+    return result;
+}
+
 std::vector<unsigned char> ContentInfo(std::vector<unsigned char> oid, std::vector<unsigned char> explicitContent) {
     std::vector<unsigned char> body = Wrap(0x06, std::move(oid));
     if (!explicitContent.empty()) {
@@ -352,6 +369,48 @@ void TestOutputAndErrors() {
     Require(allocations.empty());
 }
 
+void TestBerLengths() {
+    const std::vector<unsigned char> dataOid(std::begin(DataOid), std::end(DataOid));
+    LibreSsl3Pkcs7* pkcs7 = Decode(LongWrap(0x30, Join({LongWrap(0x06, dataOid, 0), LongWrap(0xa0, LongWrap(0x04, {'a', 'b'}, 1), 2)}), 8));
+    Require(pkcs7 != nullptr && IsPkcs7Type(pkcs7->type, 1));
+    const auto* text = static_cast<const Asn1String*>(pkcs7->d);
+    Require(text->type == 4 && text->length == 2 && std::memcmp(text->data, "ab", 2) == 0);
+    PKCS7_free_nid_postfix(pkcs7);
+
+    const std::vector<unsigned char> message(std::begin(SignedMessage), std::end(SignedMessage));
+    const std::vector<unsigned char> digests(message.begin() + 28, message.begin() + 43);
+    const std::vector<unsigned char> rest(message.begin() + 65, message.end());
+    const std::vector<unsigned char> contents =
+        LongWrap(0x30, Join({Wrap(0x06, dataOid), LongWrap(0xa0, LongWrap(0x04, {'h', 'e', 'l', 'l', 'o'}, 0), 1)}), 0);
+    const std::vector<unsigned char> body = Join({LongWrap(0x02, {0x01}, 0), LongWrap(0x31, digests, 1), contents, rest});
+    pkcs7 = Decode(LongWrap(0x30, Join({Wrap(0x06, Pkcs7Oid(2)), LongWrap(0xa0, LongWrap(0x30, body, 2), 0)}), 1));
+    Require(pkcs7 != nullptr && IsPkcs7Type(pkcs7->type, 2));
+    const auto* data = static_cast<const LibreSsl3Pkcs7Signed*>(pkcs7->d);
+    Require(data->version->length == 1 && data->version->data[0] == 1 && data->mdAlgs->num == 1);
+    Require(IsPkcs7Type(data->contents->type, 1));
+    const auto* hello = static_cast<const Asn1String*>(data->contents->d);
+    Require(hello->length == 5 && std::memcmp(hello->data, "hello", 5) == 0);
+    Require(data->cert->num == 1 && data->crl == nullptr && data->signerInfo->num == 1);
+    PKCS7_free_nid_postfix(pkcs7);
+
+    const std::vector<unsigned char> sequence = LongWrap(0x30, Wrap(0x02, {0x05}), 0);
+    pkcs7 = Decode(ContentInfo({0x2a, 0x03}, sequence));
+    Require(pkcs7 != nullptr);
+    const auto* any = static_cast<const LibreSsl3Asn1Type*>(pkcs7->d);
+    const auto* encoded = static_cast<const Asn1String*>(any->value);
+    Require(any->type == 16 && encoded->length == 6 && std::memcmp(encoded->data, sequence.data(), 6) == 0);
+    PKCS7_free_nid_postfix(pkcs7);
+
+    pkcs7 = Decode(Join({{0x30, 0x89, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0b}, Wrap(0x06, dataOid)}));
+    Require(pkcs7 != nullptr && IsPkcs7Type(pkcs7->type, 1) && pkcs7->d == nullptr);
+    PKCS7_free_nid_postfix(pkcs7);
+    pkcs7 = Decode(Join({{0x30, 0x8a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0b}, Wrap(0x06, dataOid)}));
+    Require(pkcs7 != nullptr && IsPkcs7Type(pkcs7->type, 1) && pkcs7->d == nullptr);
+    PKCS7_free_nid_postfix(pkcs7);
+    Require(Decode(Join({{0x30, 0x89, 0x01,0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0b}, Wrap(0x06, dataOid)})) == nullptr);
+    Require(allocations.empty());
+}
+
 void TestUnsupported() {
     RequireThrows([] { Decode(ContentInfo(Pkcs7Oid(3), Wrap(0x30, {}))); });
     RequireThrows([] { Decode({0x30, 0x80, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x01, 0x00, 0x00}); });
@@ -377,6 +436,7 @@ int main() {
     TestCertificatesAndCrl();
     TestDataAndOtherTypes();
     TestOutputAndErrors();
+    TestBerLengths();
     TestUnsupported();
     std::puts("LibreSSL3 d2i_PKCS7 tests passed");
 }
